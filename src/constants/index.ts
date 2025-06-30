@@ -5,11 +5,17 @@ export const ROUTES = {
   DATA_ENTRY: '/data-entry',
 };
 
-export const BUILDING_TYPES = [
-  { value: 'office', label: 'オフィス' },
-  { value: 'factory', label: '工場' },
-  { value: 'store', label: '店舗' },
-  { value: 'residential', label: '住宅' },
+export const OPTION_LIST = [
+  { value: 'trade_name', label: '商流一覧' },
+  { value: 'jepx', label: 'Jepxデータ' },
+  { value: 'fuel_adjustment', label: '燃料調整費' },
+  { value: 'charge', label: '料金' },
+  { value: 'other_charge', label: 'その他料金' },
+  { value: 'season_index', label: '季節指数' },
+  { value: 'capacity_contribution', label: '容量拠出金' },
+  { value: 'incentive', label: 'インセンティブ' },
+  { value: 'renewable_surcharge', label: '再エネ賦課金' },
+  { value: 'discounted_charge', label: '割引後料金' },
 ];
 
 export const ERROR_MESSAGES = {
