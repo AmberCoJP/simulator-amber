@@ -52,12 +52,45 @@ const Button = styled.button`
 const Login: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
   const navigate = useNavigate();
+
+  // 認証情報を直置き
+  const credentials = {
+    admin: {
+      id: 'admin',
+      password: 'admin123'
+    },
+    user: {
+      id: 'user',
+      password: 'user123'
+    }
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // TODO: ログイン処理の実装
-    navigate('/data-entry');
+    setError('');
+
+    // 管理者認証
+    if (email === credentials.admin.id && password === credentials.admin.password) {
+      // 管理者としてログイン
+      localStorage.setItem('userRole', 'admin');
+      localStorage.setItem('userId', email);
+      navigate('/data-entry');
+      return;
+    }
+
+    // ユーザー認証
+    if (email === credentials.user.id && password === credentials.user.password) {
+      // ユーザーとしてログイン
+      localStorage.setItem('userRole', 'user');
+      localStorage.setItem('userId', email);
+      navigate('/simulation-form');
+      return;
+    }
+
+    // 認証失敗
+    setError('IDまたはパスワードが正しくありません');
   };
 
   return (
@@ -65,8 +98,8 @@ const Login: React.FC = () => {
       <LoginForm onSubmit={handleSubmit}>
         <Title>電気シミュレーター</Title>
         <Input
-          type="email"
-          placeholder="メールアドレス"
+          type="text"
+          placeholder="ID"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
@@ -78,6 +111,7 @@ const Login: React.FC = () => {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
+        {error && <div style={{ color: 'red', marginBottom: '1rem', textAlign: 'center' }}>{error}</div>}
         <Button type="submit">ログイン</Button>
       </LoginForm>
     </LoginContainer>
