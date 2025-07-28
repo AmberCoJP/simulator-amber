@@ -9,13 +9,18 @@ export const OPTION_LIST = [
   { value: 'trade_name', label: '商流一覧' },
   { value: 'jepx', label: 'Jepxデータ' },
   { value: 'fuel_adjustment', label: '燃料調整費' },
-  { value: 'charge', label: '料金' },
-  { value: 'other_charge', label: 'その他料金' },
-  { value: 'season_index', label: '季節指数' },
+  { value: 'takuso_price', label: '託送料金' },
   { value: 'capacity_contribution', label: '容量拠出金' },
-  { value: 'incentive', label: 'インセンティブ' },
+  { value: 'service_charge', label: 'サービス料' },
   { value: 'renewable_surcharge', label: '再エネ賦課金' },
-  { value: 'discounted_charge', label: '割引後料金' },
+  // { value: 'discounted_charge', label: '割引後料金' },
+];
+
+export const CONTRACT_TYPE_LIST = [
+  { value: '従量A', label: '従量A' },
+  { value: '従量B', label: '従量B' },
+  { value: '従量C', label: '従量C' },
+  { value: '動力', label: '動力' },
 ];
 
 export const ERROR_MESSAGES = {
