@@ -343,6 +343,7 @@ const SimulationForm: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [showDetails, setShowDetails] = useState(false);
   const [tradeList, setTradeList] = useState<any[]>([]);
+  const [tradeNameMap, setTradeNameMap] = useState<{[key: string]: string}>({});
   const [expandedTrades, setExpandedTrades] = useState<Set<string>>(new Set());
 
   // 商流一覧を取得
@@ -355,6 +356,17 @@ const SimulationForm: React.FC = () => {
         ...doc.data()
       }));
       setTradeList(data);
+      
+      console.log('取得した商流一覧:', data);
+      
+      // IDと商流名のマッピングを作成
+      const nameMap: {[key: string]: string} = {};
+      data.forEach((trade: any) => {
+        nameMap[trade.tradeId || trade.id] = trade.tradeName;
+      });
+      setTradeNameMap(nameMap);
+      
+      console.log('商流名マッピング:', nameMap);
     } catch (error) {
       console.error('商流一覧取得エラー:', error);
     }
@@ -387,18 +399,65 @@ const SimulationForm: React.FC = () => {
   };
 
   // 託送基本料を計算する関数
-  const calculateTakusoBasic = async (tradeName: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculateTakusoBasic = async (tradeId: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
     try {
+      // 契約種別とカテゴリーを組み合わせて決定
+      let contractType = '';
+      if (formData.contractType === '従量') {
+        contractType = `従量${formData.contractCategory}`;
+      } else {
+        contractType = '動力';
+      }
+      
+      // 地域名をデータベース用の値に変換
+      const regionMap: {[key: string]: string} = {
+        '北海道': 'hokkaido',
+        '東北': 'tohoku',
+        '関東': 'tokyo',
+        '中部': 'chubu',
+        '北陸': 'hokuriku',
+        '関西': 'kansai',
+        '中国': 'chugoku',
+        '四国': 'shikoku',
+        '九州': 'kyushu'
+      };
+      const dbRegion = regionMap[region] || region;
+      
+      console.log('託送基本料検索条件:', {
+        tradeId,
+        region: dbRegion,
+        contract: contractType,
+        startDate: `${year}-${month.padStart(2, '0')}-01`
+      });
+      
+      // takuso_priceコレクションのすべてのデータを取得して表示
+      const allTakusoQuery = query(collection(db, 'takuso_price'));
+      const allTakusoSnapshot = await getDocs(allTakusoQuery);
+      console.log('takuso_priceコレクション全件データ:');
+      allTakusoSnapshot.docs.forEach((doc, index) => {
+        console.log(`[${index + 1}]`, doc.data());
+      });
+      
       const q = query(
         collection(db, 'takuso_price'),
-        where('tradeName', '==', tradeName),
-        where('region', '==', region),
+        where('tradeId', '==', tradeId),
+        where('region', '==', dbRegion),
+        where('contract', '==', contractType),
         where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
         orderBy('startDate', 'desc')
       );
       const querySnapshot = await getDocs(q);
       
+      console.log('託送基本料検索結果件数:', querySnapshot.size);
+      
+      // 託送データを全件表示
+      console.log('託送基本料データ全件:');
+      querySnapshot.docs.forEach((doc, index) => {
+        console.log(`[${index + 1}]`, doc.data());
+      });
+      
       if (querySnapshot.empty) {
+        const tradeName = tradeNameMap[tradeId] || tradeId;
         throw new Error(`${tradeName}の${region}託送基本料データが見つかりません`);
       }
 
@@ -428,18 +487,42 @@ const SimulationForm: React.FC = () => {
   };
 
   // 容量拠出金を計算する関数
-  const calculateCapacityContribution = async (tradeName: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculateCapacityContribution = async (tradeId: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
     try {
+      // 契約種別とカテゴリーを組み合わせて決定
+      let contractType = '';
+      if (formData.contractType === '従量') {
+        contractType = `従量${formData.contractCategory}`;
+      } else {
+        contractType = '動力';
+      }
+      
+      // 地域名をデータベース用の値に変換
+      const regionMap: {[key: string]: string} = {
+        '北海道': 'hokkaido',
+        '東北': 'tohoku',
+        '関東': 'tokyo',
+        '中部': 'chubu',
+        '北陸': 'hokuriku',
+        '関西': 'kansai',
+        '中国': 'chugoku',
+        '四国': 'shikoku',
+        '九州': 'kyushu'
+      };
+      const dbRegion = regionMap[region] || region;
+      
       const q = query(
         collection(db, 'yoryo_price'),
-        where('tradeName', '==', tradeName),
-        where('region', '==', region),
+        where('tradeId', '==', tradeId),
+        where('region', '==', dbRegion),
+        where('contract', '==', contractType),
         where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
         orderBy('startDate', 'desc')
       );
       const querySnapshot = await getDocs(q);
       
       if (querySnapshot.empty) {
+        const tradeName = tradeNameMap[tradeId] || tradeId;
         throw new Error(`${tradeName}の${region}容量拠出金データが見つかりません`);
       }
 
@@ -458,7 +541,7 @@ const SimulationForm: React.FC = () => {
   };
 
   // 電源料金を計算する関数
-  const calculatePowerSource = async (tradeName: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculatePowerSource = async (tradeId: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
     try {
       // Jepx月平均料金を取得
       const jepxQuery = query(
@@ -485,27 +568,54 @@ const SimulationForm: React.FC = () => {
       const jepxPrice = jepxData.areaAverages[areaKey];
 
       // エリア損失率を取得
+      let contractType = '';
+      if (formData.contractType === '従量') {
+        contractType = `従量${formData.contractCategory}`;
+      } else {
+        contractType = '動力';
+      }
+      
+      // 地域名をデータベース用の値に変換
+      const regionMap: {[key: string]: string} = {
+        '北海道': 'hokkaido',
+        '東北': 'tohoku',
+        '関東': 'tokyo',
+        '中部': 'chubu',
+        '北陸': 'hokuriku',
+        '関西': 'kansai',
+        '中国': 'chugoku',
+        '四国': 'shikoku',
+        '九州': 'kyushu'
+      };
+      const dbRegion = regionMap[region] || region;
+      
       const lossQuery = query(
         collection(db, 'fuel_adjustment'),
-        where('tradeName', '==', tradeName),
-        where('region', '==', region),
+        where('tradeId', '==', tradeId),
+        where('region', '==', dbRegion),
+        where('contract', '==', contractType),
         where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
         orderBy('startDate', 'desc')
       );
       const lossSnapshot = await getDocs(lossQuery);
       
       if (lossSnapshot.empty) {
+        const tradeName = tradeNameMap[tradeId] || tradeId;
         throw new Error(`${tradeName}の${region}エリア損失率データが見つかりません`);
       }
 
       const lossData = lossSnapshot.docs[0].data();
-      const areaLossRate = parseFloat(lossData.areaLossRate);
+      const areaLossRate = parseFloat(lossData.areaLossRate) / 100; // パーセンテージを小数に変換
 
-      const amount = jepxPrice * areaLossRate * usage;
+      const amount = (jepxPrice * (1 - areaLossRate) * usage) * 1.1; // 消費税10%を加算
+
+      // const areaLossRate = parseFloat(lossData.areaLossRate); // パーセンテージを小数に変換
+
+      // const amount = jepxPrice * areaLossRate * usage; // 消費税10%を加算
       
       return { 
         amount, 
-        details: { jepxPrice, areaLossRate, usage }
+        details: { jepxPrice, areaLossRate: parseFloat(lossData.areaLossRate), usage } // 表示用には元のパーセンテージ値を保持
       };
     } catch (error) {
       console.error('電源料金計算エラー:', error);
@@ -542,18 +652,42 @@ const SimulationForm: React.FC = () => {
   };
 
   // 託送従量料金を計算する関数
-  const calculateTakusoVolume = async (tradeName: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculateTakusoVolume = async (tradeId: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
     try {
+      // 契約種別とカテゴリーを組み合わせて決定
+      let contractType = '';
+      if (formData.contractType === '従量') {
+        contractType = `従量${formData.contractCategory}`;
+      } else {
+        contractType = '動力';
+      }
+      
+      // 地域名をデータベース用の値に変換
+      const regionMap: {[key: string]: string} = {
+        '北海道': 'hokkaido',
+        '東北': 'tohoku',
+        '関東': 'tokyo',
+        '中部': 'chubu',
+        '北陸': 'hokuriku',
+        '関西': 'kansai',
+        '中国': 'chugoku',
+        '四国': 'shikoku',
+        '九州': 'kyushu'
+      };
+      const dbRegion = regionMap[region] || region;
+      
       const q = query(
         collection(db, 'takuso_price'),
-        where('tradeName', '==', tradeName),
-        where('region', '==', region),
+        where('tradeId', '==', tradeId),
+        where('region', '==', dbRegion),
+        where('contract', '==', contractType),
         where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
         orderBy('startDate', 'desc')
       );
       const querySnapshot = await getDocs(q);
       
       if (querySnapshot.empty) {
+        const tradeName = tradeNameMap[tradeId] || tradeId;
         throw new Error(`${tradeName}の${region}託送従量料金データが見つかりません`);
       }
 
@@ -600,17 +734,33 @@ const SimulationForm: React.FC = () => {
   };
 
   // 単一の商流で計算を実行する関数
-  const calculateForTrade = async (tradeName: string): Promise<CalculationResult> => {
+  const calculateForTrade = async (trade: any): Promise<CalculationResult> => {
+    const tradeId = trade.tradeId || trade.id;
+    const tradeName = trade.tradeName;
     const usage = parseFloat(formData.usage);
     const contractCapacity = getContractCapacity(formData.contractType, formData.contractCategory, formData.contractCapacity);
     const governmentSupport = parseFloat(formData.governmentSupport);
 
+    // デバッグ用：計算に使用するパラメータをコンソールに出力
+    console.log('=== 計算パラメータ ===');
+    console.log('商流ID:', tradeId);
+    console.log('商流名:', tradeName);
+    console.log('地域:', formData.region);
+    console.log('契約種別:', formData.contractType);
+    console.log('契約カテゴリ:', formData.contractCategory);
+    console.log('契約容量:', contractCapacity);
+    console.log('使用量:', usage);
+    console.log('年:', formData.year);
+    console.log('月:', formData.month);
+    console.log('政府支援:', governmentSupport);
+    console.log('==================');
+
     // 各項目を計算
-    const takusoBasicResult = await calculateTakusoBasic(tradeName, formData.region, contractCapacity, formData.year, formData.month);
-    const capacityContributionResult = await calculateCapacityContribution(tradeName, formData.region, contractCapacity, formData.year, formData.month);
-    const powerSourceResult = await calculatePowerSource(tradeName, formData.region, usage, formData.year, formData.month);
+    const takusoBasicResult = await calculateTakusoBasic(tradeId, formData.region, contractCapacity, formData.year, formData.month);
+    const capacityContributionResult = await calculateCapacityContribution(tradeId, formData.region, contractCapacity, formData.year, formData.month);
+    const powerSourceResult = await calculatePowerSource(tradeId, formData.region, usage, formData.year, formData.month);
     const serviceChargeResult = await calculateServiceCharge(usage, formData.year, formData.month);
-    const takusoVolumeResult = await calculateTakusoVolume(tradeName, formData.region, usage, formData.year, formData.month);
+    const takusoVolumeResult = await calculateTakusoVolume(tradeId, formData.region, usage, formData.year, formData.month);
     const renewableSurchargeResult = await calculateRenewableSurcharge(usage, formData.year, formData.month);
 
     // 小計を計算
@@ -625,15 +775,15 @@ const SimulationForm: React.FC = () => {
 
     return {
       tradeName,
-      takusoBasic: takusoBasicResult.amount,
-      capacityContribution: capacityContributionResult.amount,
-      powerSource: powerSourceResult.amount,
-      serviceCharge: serviceChargeResult.amount,
-      takusoVolume: takusoVolumeResult.amount,
-      renewableSurcharge: renewableSurchargeResult.amount,
-      subtotal,
-      governmentSupport: governmentSupportAmount,
-      total,
+      takusoBasic: Math.floor(takusoBasicResult.amount),
+      capacityContribution: Math.floor(capacityContributionResult.amount),
+      powerSource: Math.floor(powerSourceResult.amount),
+      serviceCharge: Math.floor(serviceChargeResult.amount),
+      takusoVolume: Math.floor(takusoVolumeResult.amount),
+      renewableSurcharge: Math.floor(renewableSurchargeResult.amount),
+      subtotal: Math.floor(subtotal),
+      governmentSupport: Math.floor(governmentSupportAmount),
+      total: Math.floor(subtotal - governmentSupportAmount),
       details: {
         takusoBasic: takusoBasicResult.details,
         capacityContribution: capacityContributionResult.details,
@@ -657,7 +807,7 @@ const SimulationForm: React.FC = () => {
       // 全ての商流で計算を実行
       for (const trade of tradeList) {
         try {
-          const result = await calculateForTrade(trade.tradeName);
+          const result = await calculateForTrade(trade);
           results.push(result);
         } catch (error: any) {
           console.error(`${trade.tradeName}の計算でエラー:`, error);
@@ -1004,14 +1154,14 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <DetailRow>
                         <DetailLabel>エリア損失率:</DetailLabel>
-                        <DetailValue>{result.details.powerSource.areaLossRate}</DetailValue>
+                        <DetailValue>{result.details.powerSource.areaLossRate}%</DetailValue>
                       </DetailRow>
                       <DetailRow>
                         <DetailLabel>使用量:</DetailLabel>
                         <DetailValue>{result.details.powerSource.usage}kWh</DetailValue>
                       </DetailRow>
                       <CalculationFormula>
-                        {result.details.powerSource.jepxPrice}円/kWh × {result.details.powerSource.areaLossRate} × {result.details.powerSource.usage}kWh = {result.powerSource.toLocaleString()}円
+                        ({result.details.powerSource.jepxPrice}円/kWh × (1 - {result.details.powerSource.areaLossRate / 100}) × {result.details.powerSource.usage}kWh) × 1.1 = {result.powerSource.toLocaleString()}円
                       </CalculationFormula>
                     </DetailContainer>
                   )}

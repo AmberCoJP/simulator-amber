@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
-import { collection, addDoc, serverTimestamp, getDocs, query, orderBy, updateDoc, doc, setDoc, where } from 'firebase/firestore';
+import { collection, addDoc, serverTimestamp, getDocs, query, orderBy, updateDoc, doc, setDoc, where, getDoc } from 'firebase/firestore';
 import { db } from '../firebase/index.ts';
-import { OPTION_LIST, CONTRACT_TYPE_LIST } from '../constants/index.ts';
+import { OPTION_LIST, CONTRACT_TYPE_LIST, REGION_LIST } from '../constants/index.ts';
 import IconButton from '@mui/material/IconButton';
 import EditIcon from '@mui/icons-material/Edit';
 import PauseIcon from '@mui/icons-material/Pause';
@@ -197,6 +197,18 @@ const DataEntry: React.FC = () => {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [tradeList, setTradeList] = useState<any[]>([]);
+  const [tradeNameMap, setTradeNameMap] = useState<{[key: string]: string}>({});
+
+  // 商流IDから商流名を取得する関数
+  const getTradeNameById = (tradeId: string) => {
+    return tradeNameMap[tradeId] || '不明な商流';
+  };
+
+  // 地域IDから地域名を取得する関数
+  const getRegionNameById = (regionId: string) => {
+    const region = REGION_LIST.find(r => r.value === regionId);
+    return region ? region.label : regionId;
+  };
 
   // 登録済みデータを取得
   const fetchRegisteredData = async () => {
@@ -361,8 +373,15 @@ const DataEntry: React.FC = () => {
       const data = querySnapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
-      }));
+      })) as any[];
       setTradeList(data);
+      
+      // IDと商流名のマッピングを作成
+      const nameMap: {[key: string]: string} = {};
+      data.forEach(trade => {
+        nameMap[trade.tradeId || trade.id] = trade.tradeName;
+      });
+      setTradeNameMap(nameMap);
     } catch (error) {
       console.error('商流一覧取得エラー:', error);
     }
@@ -490,7 +509,7 @@ const DataEntry: React.FC = () => {
     if (isBusinessFlowSelected) {
       try {
         if (editId) {
-          // 編集時はupdateDoc
+          // 編集時はupdateDoc - 既存のドキュメントIDを使用
           const ref = doc(db, 'trend', editId);
           await updateDoc(ref, {
             tradeName: modalData.tradeName,
@@ -500,15 +519,22 @@ const DataEntry: React.FC = () => {
           });
           alert('データを更新しました');
         } else {
-          // 新規登録
+          // 新規登録 - 自動生成IDを使用し、そのIDを商流IDとして保存
           const trendData = {
+            tradeId: '', // 後で設定
             tradeName: modalData.tradeName,
             registrationDate: modalData.registrationDate || new Date().toISOString().split('T')[0],
             iconImage: modalData.iconImage ? modalData.iconImage.name : null,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp()
           };
-          await addDoc(collection(db, 'trend'), trendData);
+          const docRef = await addDoc(collection(db, 'trend'), trendData);
+          
+          // 生成されたIDを商流IDとして更新
+          await updateDoc(docRef, {
+            tradeId: docRef.id
+          });
+          
           alert('商流一覧データが正常に登録されました。');
         }
         setModalData({ 
@@ -583,7 +609,7 @@ const DataEntry: React.FC = () => {
           // 編集時はupdateDoc
           const ref = doc(db, 'fuel_adjustment', editId);
           await updateDoc(ref, {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
             contract: modalData.contract,
             areaLossRate: parseFloat(modalData.areaLossRate),
@@ -594,7 +620,7 @@ const DataEntry: React.FC = () => {
         } else {
           // 新規登録
           const fuelAdjustmentData = {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
             contract: modalData.contract,
             areaLossRate: parseFloat(modalData.areaLossRate),
@@ -636,7 +662,7 @@ const DataEntry: React.FC = () => {
           // 編集時はupdateDoc
           const ref = doc(db, 'takuso_price', editId);
           await updateDoc(ref, {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
             contract: modalData.contract,
             basicPrice: modalData.basicPriceType === 'per_kw' ? parseFloat(modalData.basicPrice) : '',
@@ -651,7 +677,7 @@ const DataEntry: React.FC = () => {
         } else {
           // 新規登録
           const takusoPriceData = {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
             contract: modalData.contract,
             basicPrice: modalData.basicPriceType === 'per_kw' ? parseFloat(modalData.basicPrice) : '',
@@ -697,8 +723,9 @@ const DataEntry: React.FC = () => {
           // 編集時はupdateDoc
           const ref = doc(db, 'yoryo_price', editId);
           await updateDoc(ref, {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
+            contract: modalData.contract,
             price: parseFloat(modalData.price),
             startDate: modalData.startDate,
             updatedAt: serverTimestamp(),
@@ -707,8 +734,9 @@ const DataEntry: React.FC = () => {
         } else {
           // 新規登録
           const yoryoPriceData = {
-            tradeName: modalData.flow,
+            tradeId: modalData.flow, // 商流IDのみ保存
             region: modalData.region,
+            contract: modalData.contract,
             price: parseFloat(modalData.price),
             startDate: modalData.startDate,
             createdAt: serverTimestamp(),
@@ -883,7 +911,7 @@ const DataEntry: React.FC = () => {
       tradeName: data.tradeName || '',
       registrationDate: data.registrationDate || '',
       iconImage: null,
-      flow: data.flow || '',
+      flow: data.tradeId || '', // 商流IDを設定
       region: data.region || '',
       contract: data.contract || '',
       areaLossRate: data.areaLossRate || '',
@@ -986,6 +1014,7 @@ const DataEntry: React.FC = () => {
                   <>
                     <TableHeader>商流</TableHeader>
                     <TableHeader>地域</TableHeader>
+                    <TableHeader>契約</TableHeader>
                     <TableHeader>容量拠出金</TableHeader>
                     <TableHeader>適用開始日</TableHeader>
                     <TableHeader>作成日時</TableHeader>
@@ -1033,8 +1062,8 @@ const DataEntry: React.FC = () => {
                   </TableRow>
                 ) : isFuelAdjustment ? (
                   <TableRow key={data.id}>
-                    <TableCell>{data.tradeName || '-'}</TableCell>
-                    <TableCell>{data.region || '-'}</TableCell>
+                    <TableCell>{getTradeNameById(data.tradeId) || '-'}</TableCell>
+                    <TableCell>{getRegionNameById(data.region) || '-'}</TableCell>
                     <TableCell>{data.contract || '-'}</TableCell>
                     <TableCell>{data.areaLossRate || '-'}</TableCell>
                     <TableCell>{data.startDate || '-'}</TableCell>
@@ -1050,8 +1079,8 @@ const DataEntry: React.FC = () => {
                   </TableRow>
                 ) : isTakusoPrice ? (
                   <TableRow key={data.id}>
-                    <TableCell>{data.tradeName || '-'}</TableCell>
-                    <TableCell>{data.region || '-'}</TableCell>
+                    <TableCell>{getTradeNameById(data.tradeId) || '-'}</TableCell>
+                    <TableCell>{getRegionNameById(data.region) || '-'}</TableCell>
                     <TableCell>{data.contract || '-'}</TableCell>
                     <TableCell>
                       {data.basicPriceType === 'per_kw' 
@@ -1072,8 +1101,9 @@ const DataEntry: React.FC = () => {
                   </TableRow>
                 ) : isYoryoPrice ? (
                   <TableRow key={data.id}>
-                    <TableCell>{data.tradeName || '-'}</TableCell>
-                    <TableCell>{data.region || '-'}</TableCell>
+                    <TableCell>{getTradeNameById(data.tradeId) || '-'}</TableCell>
+                    <TableCell>{getRegionNameById(data.region) || '-'}</TableCell>
+                    <TableCell>{data.contract || '-'}</TableCell>
                     <TableCell>{data.price ? `${data.price}円/kW` : '-'}</TableCell>
                     <TableCell>{data.startDate || '-'}</TableCell>
                     <TableCell>{formatDate(data.createdAt)}</TableCell>
@@ -1214,7 +1244,7 @@ const DataEntry: React.FC = () => {
                     >
                       <option value="">選択してください</option>
                       {tradeList.map(trade => (
-                        <option key={trade.id} value={trade.tradeName}>
+                        <option key={trade.id} value={trade.tradeId || trade.id}>
                           {trade.tradeName}
                         </option>
                       ))}
@@ -1222,13 +1252,19 @@ const DataEntry: React.FC = () => {
                   </FormGroup>
                   <FormGroup>
                     <Label>地域 *</Label>
-                    <Input
-                      type="text"
+                    <Select
                       name="region"
                       value={modalData.region}
                       onChange={handleModalChange}
                       required
-                    />
+                    >
+                      <option value="">選択してください</option>
+                      {REGION_LIST.map(region => (
+                        <option key={region.value} value={region.value}>
+                          {region.label}
+                        </option>
+                      ))}
+                    </Select>
                   </FormGroup>
                   <FormGroup>
                     <Label>契約 *</Label>
@@ -1280,7 +1316,7 @@ const DataEntry: React.FC = () => {
                     >
                       <option value="">選択してください</option>
                       {tradeList.map(trade => (
-                        <option key={trade.id} value={trade.tradeName}>
+                        <option key={trade.id} value={trade.tradeId || trade.id}>
                           {trade.tradeName}
                         </option>
                       ))}
@@ -1288,13 +1324,19 @@ const DataEntry: React.FC = () => {
                   </FormGroup>
                   <FormGroup>
                     <Label>地域 *</Label>
-                    <Input
-                      type="text"
+                    <Select
                       name="region"
                       value={modalData.region}
                       onChange={handleModalChange}
                       required
-                    />
+                    >
+                      <option value="">選択してください</option>
+                      {REGION_LIST.map(region => (
+                        <option key={region.value} value={region.value}>
+                          {region.label}
+                        </option>
+                      ))}
+                    </Select>
                   </FormGroup>
                   <FormGroup>
                     <Label>契約 *</Label>
@@ -1396,7 +1438,7 @@ const DataEntry: React.FC = () => {
                     >
                       <option value="">選択してください</option>
                       {tradeList.map(trade => (
-                        <option key={trade.id} value={trade.tradeName}>
+                        <option key={trade.id} value={trade.tradeId || trade.id}>
                           {trade.tradeName}
                         </option>
                       ))}
@@ -1404,13 +1446,35 @@ const DataEntry: React.FC = () => {
                   </FormGroup>
                   <FormGroup>
                     <Label>地域 *</Label>
-                    <Input
-                      type="text"
+                    <Select
                       name="region"
                       value={modalData.region}
                       onChange={handleModalChange}
                       required
-                    />
+                    >
+                      <option value="">選択してください</option>
+                      {REGION_LIST.map(region => (
+                        <option key={region.value} value={region.value}>
+                          {region.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormGroup>
+                  <FormGroup>
+                    <Label>契約 *</Label>
+                    <Select
+                      name="contract"
+                      value={modalData.contract}
+                      onChange={handleModalChange}
+                      required
+                    >
+                      <option value="">選択してください</option>
+                      {CONTRACT_TYPE_LIST.map(contract => (
+                        <option key={contract.value} value={contract.value}>
+                          {contract.label}
+                        </option>
+                      ))}
+                    </Select>
                   </FormGroup>
                   <FormGroup>
                     <Label>容量拠出金（円/kW） *</Label>
