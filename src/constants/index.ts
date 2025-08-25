@@ -13,7 +13,34 @@ export const OPTION_LIST = [
   { value: 'capacity_contribution', label: '容量拠出金' },
   { value: 'service_charge', label: 'サービス料' },
   { value: 'renewable_surcharge', label: '再エネ賦課金' },
+  { value: 'incentive', label: 'インセンティブ' },
   // { value: 'discounted_charge', label: '割引後料金' },
+];
+
+// インセンティブ手数料テーブル
+export const INCENTIVE_FEE_TABLE = [
+  { kwhRange: '1-199', minKwh: 1, maxKwh: 199, fee: 5800 },
+  { kwhRange: '200-399', minKwh: 200, maxKwh: 399, fee: 15000 },
+  { kwhRange: '400-599', minKwh: 400, maxKwh: 599, fee: 28000 },
+  { kwhRange: '600-799', minKwh: 600, maxKwh: 799, fee: 48000 },
+  { kwhRange: '800-999', minKwh: 800, maxKwh: 999, fee: 68000 },
+  { kwhRange: '1000+', minKwh: 1000, maxKwh: Infinity, fee: 78000 },
+];
+
+// 月のリスト
+export const MONTH_LIST = [
+  { value: '1', label: '1月' },
+  { value: '2', label: '2月' },
+  { value: '3', label: '3月' },
+  { value: '4', label: '4月' },
+  { value: '5', label: '5月' },
+  { value: '6', label: '6月' },
+  { value: '7', label: '7月' },
+  { value: '8', label: '8月' },
+  { value: '9', label: '9月' },
+  { value: '10', label: '10月' },
+  { value: '11', label: '11月' },
+  { value: '12', label: '12月' },
 ];
 
 export const CONTRACT_TYPE_LIST = [

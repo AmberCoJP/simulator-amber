@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import styled from 'styled-components';
 import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
 import { db } from '../firebase/index.ts';
@@ -7,6 +7,550 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import IconButton from '@mui/material/IconButton';
+
+// 定数定義
+const CONSTANTS = {
+  REGIONS: {
+    HOKKAIDO: '北海道',
+    TOHOKU: '東北',
+    TOKYO: '関東',
+    CHUBU: '中部',
+    HOKURIKU: '北陸',
+    KANSAI: '関西',
+    CHUGOKU: '中国',
+    SHIKOKU: '四国',
+    KYUSHU: '九州'
+  },
+  CONTRACT_TYPES: {
+    VOLUME: '従量',
+    // POWER: '動力'
+  },
+  CONTRACT_CATEGORIES: {
+    A: 'A',
+    B: 'B',
+    C: 'C'
+  },
+  DEFAULT_VALUES: {
+    CONTRACT_CAPACITY_A: 6,
+    CONTRACT_CAPACITY_B: 8,
+    CONTRACT_CAPACITY_C: 10,
+    // CONTRACT_CAPACITY_POWER: 8
+  },
+  TAX_RATE: 1.1,
+  ZERO_USAGE_DISCOUNT: 0.5
+} as const;
+
+const REGION_MAP: Record<string, string> = {
+  [CONSTANTS.REGIONS.HOKKAIDO]: 'hokkaido',
+  [CONSTANTS.REGIONS.TOHOKU]: 'tohoku',
+  [CONSTANTS.REGIONS.TOKYO]: 'tokyo',
+  [CONSTANTS.REGIONS.CHUBU]: 'chubu',
+  [CONSTANTS.REGIONS.HOKURIKU]: 'hokuriku',
+  [CONSTANTS.REGIONS.KANSAI]: 'kansai',
+  [CONSTANTS.REGIONS.CHUGOKU]: 'chugoku',
+  [CONSTANTS.REGIONS.SHIKOKU]: 'shikoku',
+  [CONSTANTS.REGIONS.KYUSHU]: 'kyushu'
+};
+
+const AREA_KEY_MAP: Record<string, string> = {
+  [CONSTANTS.REGIONS.KANSAI]: 'kansai',
+  [CONSTANTS.REGIONS.TOKYO]: 'tokyo',
+  [CONSTANTS.REGIONS.CHUBU]: 'chubu',
+  [CONSTANTS.REGIONS.KYUSHU]: 'kyushu',
+  [CONSTANTS.REGIONS.HOKKAIDO]: 'hokkaido',
+  [CONSTANTS.REGIONS.TOHOKU]: 'tohoku',
+  [CONSTANTS.REGIONS.CHUGOKU]: 'chugoku',
+  [CONSTANTS.REGIONS.SHIKOKU]: 'shikoku',
+  [CONSTANTS.REGIONS.HOKURIKU]: 'hokuriku'
+};
+
+// 型定義の改善
+interface Trade {
+  id: string;
+  tradeId?: string;
+  tradeName: string;
+}
+
+interface CalculationDetails {
+  takusoBasic: {
+    basicPriceType: string;
+    basicPrice?: number;
+    basicPriceFirst6kw?: number;
+    basicPriceOver6kw?: number;
+    contractCapacity: number;
+  };
+  capacityContribution: {
+    price: number;
+    contractCapacity: number;
+  };
+  powerSource: {
+    jepxPrice: number;
+    areaLossRate: number;
+    usage: number;
+  };
+  serviceCharge: {
+    price: number;
+    usage: number;
+  };
+  takusoVolume: {
+    price: number;
+    usage: number;
+  };
+  renewableSurcharge: {
+    price: number;
+    usage: number;
+  };
+  incentive: {
+    monthlyIndex: number;
+    acquiredUnits: number;
+    fee: number;
+    usage: number;
+  };
+}
+
+interface CalculationResult {
+  tradeName: string;
+  takusoBasic: number;
+  capacityContribution: number;
+  powerSource: number;
+  serviceCharge: number;
+  takusoVolume: number;
+  renewableSurcharge: number;
+  incentive: number;
+  subtotal: number;
+  governmentSupport: number;
+  total: number;
+  details: CalculationDetails;
+}
+
+interface FormData {
+  contractType: string;
+  contractCategory: string;
+  region: string;
+  usage: string;
+  currentPrice: string;
+  year: string;
+  month: string;
+  governmentSupport: string;
+  morningPercent: string;
+  daytimePercent: string;
+  nightPercent: string;
+  meterReadingStart: string;
+  meterReadingEnd: string;
+  contractCapacity: string;
+}
+
+interface CalculationParams {
+  tradeId: string;
+  region: string;
+  contractCapacity: number;
+  usage: number;
+  year: string;
+  month: string;
+  governmentSupport: number;
+  contractType: string;
+  contractCategory: string;
+  isZeroUsage: boolean;
+}
+
+// データキャッシュ用のインターフェース
+interface DataCache {
+  takusoPrice: Map<string, any>;
+  yoryoPrice: Map<string, any>;
+  fuelAdjustment: Map<string, any>;
+  jepxMonthlyData: Map<string, any>;
+  serviceCharge: Map<string, any>;
+  renewableSurcharge: Map<string, any>;
+  incentive: Map<string, any>;
+}
+
+// カスタムフック: データキャッシュ管理
+const useDataCache = () => {
+  const cacheRef = useRef<DataCache>({
+    takusoPrice: new Map(),
+    yoryoPrice: new Map(),
+    fuelAdjustment: new Map(),
+    jepxMonthlyData: new Map(),
+    serviceCharge: new Map(),
+    renewableSurcharge: new Map(),
+    incentive: new Map()
+  });
+
+  const getCacheKey = useCallback((collectionName: string, conditions: Array<{ field: string; operator: string; value: any }>, orderByField?: string) => {
+    const conditionStr = conditions
+      .map(c => `${c.field}${c.operator}${c.value}`)
+      .sort()
+      .join('_');
+    return `${collectionName}_${conditionStr}_${orderByField || 'none'}`;
+  }, []);
+
+  const getCachedData = useCallback((collectionName: keyof DataCache, cacheKey: string) => {
+    return cacheRef.current[collectionName].get(cacheKey);
+  }, []);
+
+  const setCachedData = useCallback((collectionName: keyof DataCache, cacheKey: string, data: any) => {
+    cacheRef.current[collectionName].set(cacheKey, data);
+  }, []);
+
+  const clearCache = useCallback(() => {
+    cacheRef.current.takusoPrice.clear();
+    cacheRef.current.yoryoPrice.clear();
+    cacheRef.current.fuelAdjustment.clear();
+    cacheRef.current.jepxMonthlyData.clear();
+    cacheRef.current.serviceCharge.clear();
+    cacheRef.current.renewableSurcharge.clear();
+    cacheRef.current.incentive.clear();
+  }, []);
+
+  return {
+    getCacheKey,
+    getCachedData,
+    setCachedData,
+    clearCache
+  };
+};
+
+// カスタムフック: 商流データの管理
+const useTradeData = () => {
+  const [tradeList, setTradeList] = useState<Trade[]>([]);
+  const [tradeNameMap, setTradeNameMap] = useState<Record<string, string>>({});
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string>('');
+
+  const fetchTradeList = useCallback(async () => {
+    setIsLoading(true);
+    setError('');
+    
+    try {
+      const q = query(collection(db, 'trend'), orderBy('tradeName', 'asc'));
+      const querySnapshot = await getDocs(q);
+      const data = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Trade[];
+      
+      setTradeList(data);
+      
+      // IDと商流名のマッピングを作成
+      const nameMap: Record<string, string> = {};
+      data.forEach((trade) => {
+        nameMap[trade.tradeId || trade.id] = trade.tradeName;
+      });
+      setTradeNameMap(nameMap);
+      
+    } catch (error) {
+      console.error('商流一覧取得エラー:', error);
+      setError('商流一覧の取得に失敗しました');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  return {
+    tradeList,
+    tradeNameMap,
+    isLoading,
+    error,
+    fetchTradeList
+  };
+};
+
+// カスタムフック: 計算ロジック
+const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
+
+  // 契約容量を取得する関数
+  const getContractCapacity = useCallback((contractType: string, contractCategory: string, contractCapacity: string): number => {
+    if (contractType === CONSTANTS.CONTRACT_TYPES.VOLUME && contractCategory === CONSTANTS.CONTRACT_CATEGORIES.A) {
+      return CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_A;
+    // } else if (contractType === CONSTANTS.CONTRACT_TYPES.POWER) {
+    //   return CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_POWER;
+    } else {
+      return parseFloat(contractCapacity) || CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_B;
+    }
+  }, []);
+
+  // 契約種別を取得する関数
+  const getContractType = useCallback((contractType: string, contractCategory: string): string => {
+    if (contractType === CONSTANTS.CONTRACT_TYPES.VOLUME) {
+      return `従量${contractCategory}`;
+    } else {
+      // return CONSTANTS.CONTRACT_TYPES.POWER;
+      return `従量${contractCategory}`; // 動力の場合は従量として扱う
+    }
+  }, []);
+
+  // 地域名をデータベース用の値に変換する関数
+  const getDbRegion = useCallback((region: string): string => {
+    return REGION_MAP[region] || region;
+  }, []);
+
+  // データベースからデータを取得する共通関数
+  const fetchDataFromDb = useCallback(async (
+    collectionName: string,
+    conditions: Array<{ field: string; operator: string; value: any }>,
+    orderByField?: string
+  ) => {
+    let q = query(collection(db, collectionName));
+    
+    conditions.forEach(({ field, operator, value }) => {
+      q = query(q, where(field, operator as any, value));
+    });
+    
+    if (orderByField) {
+      q = query(q, orderBy(orderByField, 'desc'));
+    }
+    
+    const querySnapshot = await getDocs(q);
+    
+    if (querySnapshot.empty) {
+      throw new Error(`${collectionName}のデータが見つかりません`);
+    }
+    
+    const result = querySnapshot.docs[0].data();
+    return result;
+  }, []);
+
+  // 託送基本料を計算する関数
+  const calculateTakusoBasic = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+    try {
+      const contractType = getContractType(params.contractType, params.contractCategory);
+      const dbRegion = getDbRegion(params.region);
+      const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
+      
+      const data = await fetchDataFromDb('takuso_price', [
+        { field: 'tradeId', operator: '==', value: params.tradeId },
+        { field: 'region', operator: '==', value: dbRegion },
+        { field: 'contract', operator: '==', value: contractType },
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      let amount = 0;
+      let details: any = {
+        basicPriceType: data.basicPriceType,
+        contractCapacity: params.contractCapacity
+      };
+      
+      if (data.basicPriceType === 'per_kw') {
+        amount = parseFloat(data.basicPrice) * params.contractCapacity;
+        details.basicPrice = parseFloat(data.basicPrice);
+      } else if (data.basicPriceType === 'tiered') {
+        const first6kwPrice = parseFloat(data.basicPriceFirst6kw);
+        const over6kwPrice = parseFloat(data.basicPriceOver6kw);
+        amount = first6kwPrice + (params.contractCapacity - 6) * over6kwPrice;
+        details.basicPriceFirst6kw = first6kwPrice;
+        details.basicPriceOver6kw = over6kwPrice;
+      }
+      
+      return { amount, details };
+    } catch (error) {
+      const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
+      throw new Error(`${tradeName}の${params.region}託送基本料データが見つかりません`);
+    }
+  }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
+
+  // 容量拠出金を計算する関数
+  const calculateCapacityContribution = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+    try {
+      const contractType = getContractType(params.contractType, params.contractCategory);
+      const dbRegion = getDbRegion(params.region);
+      const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
+      
+      const data = await fetchDataFromDb('yoryo_price', [
+        { field: 'tradeId', operator: '==', value: params.tradeId },
+        { field: 'region', operator: '==', value: dbRegion },
+        { field: 'contract', operator: '==', value: contractType },
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      const price = parseFloat(data.price);
+      const amount = price * params.contractCapacity;
+      
+      return { 
+        amount, 
+        details: { price, contractCapacity: params.contractCapacity }
+      };
+    } catch (error) {
+      const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
+      throw new Error(`${tradeName}の${params.region}容量拠出金データが見つかりません`);
+    }
+  }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
+
+  // 電源料金を計算する関数
+  const calculatePowerSource = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+    try {
+      // Jepx月平均料金を取得
+      const jepxData = await fetchDataFromDb('jepx_monthly_data', [
+        { field: 'date', operator: '==', value: `${params.year}-${params.month.padStart(2, '0')}` }
+      ]);
+      
+      const areaKey = AREA_KEY_MAP[params.region] || 'kansai';
+      const jepxPrice = jepxData.areaAverages[areaKey];
+
+      // エリア損失率を取得
+      const contractType = getContractType(params.contractType, params.contractCategory);
+      const dbRegion = getDbRegion(params.region);
+      const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
+      
+      const lossData = await fetchDataFromDb('fuel_adjustment', [
+        { field: 'tradeId', operator: '==', value: params.tradeId },
+        { field: 'region', operator: '==', value: dbRegion },
+        { field: 'contract', operator: '==', value: contractType },
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      const areaLossRate = parseFloat(lossData.areaLossRate) / 100;
+      const amount = (params.usage * jepxPrice / (1 - areaLossRate)) * CONSTANTS.TAX_RATE;
+      
+      return { 
+        amount, 
+        details: { jepxPrice, areaLossRate: parseFloat(lossData.areaLossRate), usage: params.usage }
+      };
+    } catch (error) {
+      const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
+      throw new Error(`${tradeName}の${params.region}電源料金データが見つかりません`);
+    }
+  }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
+
+  // サービス料を計算する関数
+  const calculateServiceCharge = useCallback(async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+    try {
+      const startDate = `${year}-${month.padStart(2, '0')}-01`;
+      const data = await fetchDataFromDb('service_charge', [
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      const price = parseFloat(data.price);
+      const amount = price * usage;
+      
+      return { 
+        amount, 
+        details: { price, usage }
+      };
+    } catch (error) {
+      throw new Error('サービス料データが見つかりません');
+    }
+  }, [fetchDataFromDb]);
+
+  // 託送従量料金を計算する関数
+  const calculateTakusoVolume = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+    try {
+      const contractType = getContractType(params.contractType, params.contractCategory);
+      const dbRegion = getDbRegion(params.region);
+      const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
+      
+      const data = await fetchDataFromDb('takuso_price', [
+        { field: 'tradeId', operator: '==', value: params.tradeId },
+        { field: 'region', operator: '==', value: dbRegion },
+        { field: 'contract', operator: '==', value: contractType },
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      const price = parseFloat(data.volumePrice);
+      const amount = price * params.usage;
+      
+      return { 
+        amount, 
+        details: { price, usage: params.usage }
+      };
+    } catch (error) {
+      const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
+      throw new Error(`${tradeName}の${params.region}託送従量料金データが見つかりません`);
+    }
+  }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
+
+  // 再エネ賦課金を計算する関数
+  const calculateRenewableSurcharge = useCallback(async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+    try {
+      const startDate = `${year}-${month.padStart(2, '0')}-01`;
+      const data = await fetchDataFromDb('renewable_surcharge', [
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      const price = parseFloat(data.price);
+      const amount = price * usage;
+      
+      return { 
+        amount, 
+        details: { price, usage }
+      };
+    } catch (error) {
+      throw new Error('再エネ賦課金データが見つかりません');
+    }
+  }, [fetchDataFromDb]);
+
+  // インセンティブを計算する関数
+  const calculateIncentive = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+    try {
+      const contractType = getContractType(params.contractType, params.contractCategory);
+      const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
+      
+      const data = await fetchDataFromDb('incentive', [
+        { field: 'tradeId', operator: '==', value: params.tradeId },
+        { field: 'contract', operator: '==', value: contractType },
+        { field: 'startDate', operator: '<=', value: startDate }
+      ], 'startDate');
+
+      // 該当月の指数を取得（数値キーと文字列キーの両方を試行）
+      let monthlyIndex = data.monthlyIndices[params.month];
+      if (!monthlyIndex) {
+        // 数値キーで試行
+        monthlyIndex = data.monthlyIndices[parseInt(params.month)];
+      }
+      
+      if (!monthlyIndex) {
+        throw new Error(`${params.month}月の指数データが見つかりません。利用可能な月: ${Object.keys(data.monthlyIndices).join(', ')}`);
+      }
+
+      // 獲得件数を計算（使用量 × 指数）
+      const acquiredUnits = params.usage * monthlyIndex;
+
+      let fee = 0;
+
+      // インセンティブタイプに応じて計算
+      if (data.incentiveType === 'flatRate') {
+        // 一律料金パターン
+        // 最小獲得件数チェック
+        if (data.flatRate?.minimumAcquisition && acquiredUnits < data.flatRate.minimumAcquisition) {
+          fee = 0;
+        } else {
+          fee = data.flatRate?.fee || 0;
+        }
+      } else {
+        // 手数料テーブルパターン（従来の方式）
+        for (const feeItem of data.feeTable) {
+          if (acquiredUnits >= feeItem.minKwh && (feeItem.maxKwh === Infinity || acquiredUnits <= feeItem.maxKwh)) {
+            fee = feeItem.fee;
+            break;
+          }
+        }
+      }
+
+      return { 
+        amount: fee, 
+        details: { 
+          monthlyIndex, 
+          acquiredUnits, 
+          fee, 
+          usage: params.usage 
+        }
+      };
+    } catch (error) {
+      const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
+      throw new Error(`${tradeName}のインセンティブデータが見つかりません`);
+    }
+  }, [getContractType, fetchDataFromDb, tradeNameMap]);
+
+  return {
+    getContractCapacity,
+    calculateTakusoBasic,
+    calculateCapacityContribution,
+    calculatePowerSource,
+    calculateServiceCharge,
+    calculateTakusoVolume,
+    calculateRenewableSurcharge,
+    calculateIncentive
+  };
+};
 
 const Container = styled.div`
   max-width: 400px;
@@ -241,8 +785,8 @@ const SavingsTradeResultHeader = styled(TradeResultHeader)`
   }
 `;
 
-const TradeResultContent = styled.div<{ isExpanded: boolean }>`
-  max-height: ${(props: { isExpanded: boolean }) => props.isExpanded ? '2000px' : '0'};
+const TradeResultContent = styled.div<{ $isExpanded: boolean }>`
+  max-height: ${(props: { $isExpanded: boolean }) => props.$isExpanded ? '2000px' : '0'};
   overflow: hidden;
   transition: max-height 0.3s ease-in-out;
 `;
@@ -260,122 +804,48 @@ const ExpandButton = styled(IconButton)`
   }
 `;
 
-interface CalculationResult {
-  tradeName: string;
-  takusoBasic: number;
-  capacityContribution: number;
-  powerSource: number;
-  serviceCharge: number;
-  takusoVolume: number;
-  renewableSurcharge: number;
-  subtotal: number;
-  governmentSupport: number;
-  total: number;
-  details: {
-    takusoBasic: {
-      basicPriceType: string;
-      basicPrice?: number;
-      basicPriceFirst6kw?: number;
-      basicPriceOver6kw?: number;
-      contractCapacity: number;
-    };
-    capacityContribution: {
-      price: number;
-      contractCapacity: number;
-    };
-    powerSource: {
-      jepxPrice: number;
-      areaLossRate: number;
-      usage: number;
-    };
-    serviceCharge: {
-      price: number;
-      usage: number;
-    };
-    takusoVolume: {
-      price: number;
-      usage: number;
-    };
-    renewableSurcharge: {
-      price: number;
-      usage: number;
-    };
-  };
-}
-
-interface FormData {
-  contractType: string;
-  contractCategory: string;
-  region: string;
-  usage: string;
-  currentPrice: string;
-  year: string;
-  month: string;
-  governmentSupport: string;
-  morningPercent: string;
-  daytimePercent: string;
-  nightPercent: string;
-  meterReadingStart: string;
-  meterReadingEnd: string;
-  contractCapacity: string;
-}
-
 const SimulationForm: React.FC = () => {
   const [formData, setFormData] = useState<FormData>({
-    contractType: '従量',
-    contractCategory: 'B',
-    region: '関西',
-    usage: '801',
+    contractType: CONSTANTS.CONTRACT_TYPES.VOLUME,
+    contractCategory: CONSTANTS.CONTRACT_CATEGORIES.A,
+    region: CONSTANTS.REGIONS.KANSAI,
+    usage: '',
     currentPrice: '',
     year: '2025',
     month: '4',
-    governmentSupport: '2.5',
+    governmentSupport: '0',
     morningPercent: '',
     daytimePercent: '',
     nightPercent: '',
     meterReadingStart: '',
     meterReadingEnd: '',
-    contractCapacity: '8'
+    contractCapacity: CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_B.toString()
   });
+
+  const [isZeroUsage, setIsZeroUsage] = useState(false);
+
+  const { tradeList, tradeNameMap, isLoading, error: tradeError, fetchTradeList } = useTradeData();
+  const {
+    getContractCapacity,
+    calculateTakusoBasic,
+    calculateCapacityContribution,
+    calculatePowerSource,
+    calculateServiceCharge,
+    calculateTakusoVolume,
+    calculateRenewableSurcharge,
+    calculateIncentive
+  } = useCalculationLogic(tradeNameMap);
 
   const [calculationResults, setCalculationResults] = useState<CalculationResult[]>([]);
   const [isCalculating, setIsCalculating] = useState(false);
   const [error, setError] = useState<string>('');
   const [showDetails, setShowDetails] = useState(false);
-  const [tradeList, setTradeList] = useState<any[]>([]);
-  const [tradeNameMap, setTradeNameMap] = useState<{[key: string]: string}>({});
   const [expandedTrades, setExpandedTrades] = useState<Set<string>>(new Set());
-
-  // 商流一覧を取得
-  const fetchTradeList = async () => {
-    try {
-      const q = query(collection(db, 'trend'), orderBy('tradeName', 'asc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setTradeList(data);
-      
-      console.log('取得した商流一覧:', data);
-      
-      // IDと商流名のマッピングを作成
-      const nameMap: {[key: string]: string} = {};
-      data.forEach((trade: any) => {
-        nameMap[trade.tradeId || trade.id] = trade.tradeName;
-      });
-      setTradeNameMap(nameMap);
-      
-      console.log('商流名マッピング:', nameMap);
-    } catch (error) {
-      console.error('商流一覧取得エラー:', error);
-    }
-  };
 
   // コンポーネントマウント時に商流一覧を取得
   useEffect(() => {
     fetchTradeList();
-  }, []);
+  }, [fetchTradeList]);
 
   // 商流の展開/折りたたみを切り替える関数
   const toggleTradeExpansion = (tradeName: string) => {
@@ -388,399 +858,125 @@ const SimulationForm: React.FC = () => {
     setExpandedTrades(newExpandedTrades);
   };
 
-  // 契約容量を取得する関数
-  const getContractCapacity = (contractType: string, contractCategory: string, contractCapacity: string): number => {
-    if (contractType === '従量' && contractCategory === 'A') {
-      return 6; // 従量Aは6kW固定
-    } else {
-      // 従量B、C、動力は入力値を使用
-      return parseFloat(contractCapacity) || 8;
-    }
-  };
-
-  // 託送基本料を計算する関数
-  const calculateTakusoBasic = async (tradeId: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      // 契約種別とカテゴリーを組み合わせて決定
-      let contractType = '';
-      if (formData.contractType === '従量') {
-        contractType = `従量${formData.contractCategory}`;
-      } else {
-        contractType = '動力';
-      }
-      
-      // 地域名をデータベース用の値に変換
-      const regionMap: {[key: string]: string} = {
-        '北海道': 'hokkaido',
-        '東北': 'tohoku',
-        '関東': 'tokyo',
-        '中部': 'chubu',
-        '北陸': 'hokuriku',
-        '関西': 'kansai',
-        '中国': 'chugoku',
-        '四国': 'shikoku',
-        '九州': 'kyushu'
-      };
-      const dbRegion = regionMap[region] || region;
-      
-      console.log('託送基本料検索条件:', {
-        tradeId,
-        region: dbRegion,
-        contract: contractType,
-        startDate: `${year}-${month.padStart(2, '0')}-01`
-      });
-      
-      // takuso_priceコレクションのすべてのデータを取得して表示
-      const allTakusoQuery = query(collection(db, 'takuso_price'));
-      const allTakusoSnapshot = await getDocs(allTakusoQuery);
-      console.log('takuso_priceコレクション全件データ:');
-      allTakusoSnapshot.docs.forEach((doc, index) => {
-        console.log(`[${index + 1}]`, doc.data());
-      });
-      
-      const q = query(
-        collection(db, 'takuso_price'),
-        where('tradeId', '==', tradeId),
-        where('region', '==', dbRegion),
-        where('contract', '==', contractType),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      
-      console.log('託送基本料検索結果件数:', querySnapshot.size);
-      
-      // 託送データを全件表示
-      console.log('託送基本料データ全件:');
-      querySnapshot.docs.forEach((doc, index) => {
-        console.log(`[${index + 1}]`, doc.data());
-      });
-      
-      if (querySnapshot.empty) {
-        const tradeName = tradeNameMap[tradeId] || tradeId;
-        throw new Error(`${tradeName}の${region}託送基本料データが見つかりません`);
-      }
-
-      const data = querySnapshot.docs[0].data();
-      let amount = 0;
-      let details: any = {
-        basicPriceType: data.basicPriceType,
-        contractCapacity
-      };
-      
-      if (data.basicPriceType === 'per_kw') {
-        amount = parseFloat(data.basicPrice) * contractCapacity;
-        details.basicPrice = parseFloat(data.basicPrice);
-      } else if (data.basicPriceType === 'tiered') {
-        const first6kwPrice = parseFloat(data.basicPriceFirst6kw);
-        const over6kwPrice = parseFloat(data.basicPriceOver6kw);
-        amount = first6kwPrice + (contractCapacity - 6) * over6kwPrice;
-        details.basicPriceFirst6kw = first6kwPrice;
-        details.basicPriceOver6kw = over6kwPrice;
-      }
-      
-      return { amount, details };
-    } catch (error) {
-      console.error('託送基本料計算エラー:', error);
-      throw error;
-    }
-  };
-
-  // 容量拠出金を計算する関数
-  const calculateCapacityContribution = async (tradeId: string, region: string, contractCapacity: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      // 契約種別とカテゴリーを組み合わせて決定
-      let contractType = '';
-      if (formData.contractType === '従量') {
-        contractType = `従量${formData.contractCategory}`;
-      } else {
-        contractType = '動力';
-      }
-      
-      // 地域名をデータベース用の値に変換
-      const regionMap: {[key: string]: string} = {
-        '北海道': 'hokkaido',
-        '東北': 'tohoku',
-        '関東': 'tokyo',
-        '中部': 'chubu',
-        '北陸': 'hokuriku',
-        '関西': 'kansai',
-        '中国': 'chugoku',
-        '四国': 'shikoku',
-        '九州': 'kyushu'
-      };
-      const dbRegion = regionMap[region] || region;
-      
-      const q = query(
-        collection(db, 'yoryo_price'),
-        where('tradeId', '==', tradeId),
-        where('region', '==', dbRegion),
-        where('contract', '==', contractType),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      
-      if (querySnapshot.empty) {
-        const tradeName = tradeNameMap[tradeId] || tradeId;
-        throw new Error(`${tradeName}の${region}容量拠出金データが見つかりません`);
-      }
-
-      const data = querySnapshot.docs[0].data();
-      const price = parseFloat(data.price);
-      const amount = price * contractCapacity;
-      
-      return { 
-        amount, 
-        details: { price, contractCapacity }
-      };
-    } catch (error) {
-      console.error('容量拠出金計算エラー:', error);
-      throw error;
-    }
-  };
-
-  // 電源料金を計算する関数
-  const calculatePowerSource = async (tradeId: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      // Jepx月平均料金を取得
-      const jepxQuery = query(
-        collection(db, 'jepx_monthly_data'),
-        where('date', '==', `${year}-${month.padStart(2, '0')}`)
-      );
-      const jepxSnapshot = await getDocs(jepxQuery);
-      
-      if (jepxSnapshot.empty) {
-        throw new Error(`${year}年${month}月のJepxデータが見つかりません`);
-      }
-
-      const jepxData = jepxSnapshot.docs[0].data();
-      const areaKey = region === '関西' ? 'kansai' : 
-                     region === '関東' ? 'tokyo' : 
-                     region === '中部' ? 'chubu' : 
-                     region === '九州' ? 'kyushu' : 
-                     region === '北海道' ? 'hokkaido' : 
-                     region === '東北' ? 'tohoku' : 
-                     region === '中国' ? 'chugoku' : 
-                     region === '四国' ? 'shikoku' : 
-                     region === '北陸' ? 'hokuriku' : 'kansai';
-      
-      const jepxPrice = jepxData.areaAverages[areaKey];
-
-      // エリア損失率を取得
-      let contractType = '';
-      if (formData.contractType === '従量') {
-        contractType = `従量${formData.contractCategory}`;
-      } else {
-        contractType = '動力';
-      }
-      
-      // 地域名をデータベース用の値に変換
-      const regionMap: {[key: string]: string} = {
-        '北海道': 'hokkaido',
-        '東北': 'tohoku',
-        '関東': 'tokyo',
-        '中部': 'chubu',
-        '北陸': 'hokuriku',
-        '関西': 'kansai',
-        '中国': 'chugoku',
-        '四国': 'shikoku',
-        '九州': 'kyushu'
-      };
-      const dbRegion = regionMap[region] || region;
-      
-      const lossQuery = query(
-        collection(db, 'fuel_adjustment'),
-        where('tradeId', '==', tradeId),
-        where('region', '==', dbRegion),
-        where('contract', '==', contractType),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const lossSnapshot = await getDocs(lossQuery);
-      
-      if (lossSnapshot.empty) {
-        const tradeName = tradeNameMap[tradeId] || tradeId;
-        throw new Error(`${tradeName}の${region}エリア損失率データが見つかりません`);
-      }
-
-      const lossData = lossSnapshot.docs[0].data();
-      const areaLossRate = parseFloat(lossData.areaLossRate) / 100; // パーセンテージを小数に変換
-
-      const amount = (jepxPrice * (1 - areaLossRate) * usage) * 1.1; // 消費税10%を加算
-
-      // const areaLossRate = parseFloat(lossData.areaLossRate); // パーセンテージを小数に変換
-
-      // const amount = jepxPrice * areaLossRate * usage; // 消費税10%を加算
-      
-      return { 
-        amount, 
-        details: { jepxPrice, areaLossRate: parseFloat(lossData.areaLossRate), usage } // 表示用には元のパーセンテージ値を保持
-      };
-    } catch (error) {
-      console.error('電源料金計算エラー:', error);
-      throw error;
-    }
-  };
-
-  // サービス料を計算する関数
-  const calculateServiceCharge = async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      const q = query(
-        collection(db, 'service_charge'),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      
-      if (querySnapshot.empty) {
-        throw new Error('サービス料データが見つかりません');
-      }
-
-      const data = querySnapshot.docs[0].data();
-      const price = parseFloat(data.price);
-      const amount = price * usage;
-      
-      return { 
-        amount, 
-        details: { price, usage }
-      };
-    } catch (error) {
-      console.error('サービス料計算エラー:', error);
-      throw error;
-    }
-  };
-
-  // 託送従量料金を計算する関数
-  const calculateTakusoVolume = async (tradeId: string, region: string, usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      // 契約種別とカテゴリーを組み合わせて決定
-      let contractType = '';
-      if (formData.contractType === '従量') {
-        contractType = `従量${formData.contractCategory}`;
-      } else {
-        contractType = '動力';
-      }
-      
-      // 地域名をデータベース用の値に変換
-      const regionMap: {[key: string]: string} = {
-        '北海道': 'hokkaido',
-        '東北': 'tohoku',
-        '関東': 'tokyo',
-        '中部': 'chubu',
-        '北陸': 'hokuriku',
-        '関西': 'kansai',
-        '中国': 'chugoku',
-        '四国': 'shikoku',
-        '九州': 'kyushu'
-      };
-      const dbRegion = regionMap[region] || region;
-      
-      const q = query(
-        collection(db, 'takuso_price'),
-        where('tradeId', '==', tradeId),
-        where('region', '==', dbRegion),
-        where('contract', '==', contractType),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      
-      if (querySnapshot.empty) {
-        const tradeName = tradeNameMap[tradeId] || tradeId;
-        throw new Error(`${tradeName}の${region}託送従量料金データが見つかりません`);
-      }
-
-      const data = querySnapshot.docs[0].data();
-      const price = parseFloat(data.volumePrice);
-      const amount = price * usage;
-      
-      return { 
-        amount, 
-        details: { price, usage }
-      };
-    } catch (error) {
-      console.error('託送従量料金計算エラー:', error);
-      throw error;
-    }
-  };
-
-  // 再エネ賦課金を計算する関数
-  const calculateRenewableSurcharge = async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
-    try {
-      const q = query(
-        collection(db, 'renewable_surcharge'),
-        where('startDate', '<=', `${year}-${month.padStart(2, '0')}-01`),
-        orderBy('startDate', 'desc')
-      );
-      const querySnapshot = await getDocs(q);
-      
-      if (querySnapshot.empty) {
-        throw new Error('再エネ賦課金データが見つかりません');
-      }
-
-      const data = querySnapshot.docs[0].data();
-      const price = parseFloat(data.price);
-      const amount = price * usage;
-      
-      return { 
-        amount, 
-        details: { price, usage }
-      };
-    } catch (error) {
-      console.error('再エネ賦課金計算エラー:', error);
-      throw error;
-    }
-  };
-
   // 単一の商流で計算を実行する関数
-  const calculateForTrade = async (trade: any): Promise<CalculationResult> => {
+  const calculateForTrade = useCallback(async (trade: Trade): Promise<CalculationResult> => {
     const tradeId = trade.tradeId || trade.id;
     const tradeName = trade.tradeName;
     const usage = parseFloat(formData.usage);
     const contractCapacity = getContractCapacity(formData.contractType, formData.contractCategory, formData.contractCapacity);
     const governmentSupport = parseFloat(formData.governmentSupport);
 
-    // デバッグ用：計算に使用するパラメータをコンソールに出力
-    console.log('=== 計算パラメータ ===');
-    console.log('商流ID:', tradeId);
-    console.log('商流名:', tradeName);
-    console.log('地域:', formData.region);
-    console.log('契約種別:', formData.contractType);
-    console.log('契約カテゴリ:', formData.contractCategory);
-    console.log('契約容量:', contractCapacity);
-    console.log('使用量:', usage);
-    console.log('年:', formData.year);
-    console.log('月:', formData.month);
-    console.log('政府支援:', governmentSupport);
-    console.log('==================');
-
     // 各項目を計算
-    const takusoBasicResult = await calculateTakusoBasic(tradeId, formData.region, contractCapacity, formData.year, formData.month);
-    const capacityContributionResult = await calculateCapacityContribution(tradeId, formData.region, contractCapacity, formData.year, formData.month);
-    const powerSourceResult = await calculatePowerSource(tradeId, formData.region, usage, formData.year, formData.month);
-    const serviceChargeResult = await calculateServiceCharge(usage, formData.year, formData.month);
-    const takusoVolumeResult = await calculateTakusoVolume(tradeId, formData.region, usage, formData.year, formData.month);
-    const renewableSurchargeResult = await calculateRenewableSurcharge(usage, formData.year, formData.month);
+         const takusoBasicResult = await calculateTakusoBasic({
+       tradeId,
+       region: formData.region,
+       contractCapacity,
+       usage,
+       year: formData.year,
+       month: formData.month,
+       governmentSupport,
+       contractType: formData.contractType,
+       contractCategory: formData.contractCategory,
+       isZeroUsage
+     });
+         const capacityContributionResult = await calculateCapacityContribution({
+       tradeId,
+       region: formData.region,
+       contractCapacity,
+       usage,
+       year: formData.year,
+       month: formData.month,
+       governmentSupport,
+       contractType: formData.contractType,
+       contractCategory: formData.contractCategory,
+       isZeroUsage
+     });
+    
+    // 使用量が0の場合、基本料金以外の計算をスキップ
+    let powerSourceResult, serviceChargeResult, takusoVolumeResult, renewableSurchargeResult, incentiveResult;
+    
+         if (isZeroUsage) {
+       // 使用量が0の場合、基本料金以外は0に設定
+       powerSourceResult = { amount: 0, details: { jepxPrice: 0, areaLossRate: 0, usage: 0 } };
+       serviceChargeResult = { amount: 0, details: { price: 0, usage: 0 } };
+       takusoVolumeResult = { amount: 0, details: { price: 0, usage: 0 } };
+       renewableSurchargeResult = { amount: 0, details: { price: 0, usage: 0 } };
+       incentiveResult = { amount: 0, details: { monthlyIndex: 0, acquiredUnits: 0, fee: 0, usage: 0 } };
+     } else {
+      // 通常の計算を実行
+             powerSourceResult = await calculatePowerSource({
+         tradeId,
+         region: formData.region,
+         contractCapacity,
+         usage,
+         year: formData.year,
+         month: formData.month,
+         governmentSupport,
+         contractType: formData.contractType,
+         contractCategory: formData.contractCategory,
+         isZeroUsage
+       });
+      serviceChargeResult = await calculateServiceCharge(usage, formData.year, formData.month);
+             takusoVolumeResult = await calculateTakusoVolume({
+         tradeId,
+         region: formData.region,
+         contractCapacity,
+         usage,
+         year: formData.year,
+         month: formData.month,
+         governmentSupport,
+         contractType: formData.contractType,
+         contractCategory: formData.contractCategory,
+         isZeroUsage
+       });
+      renewableSurchargeResult = await calculateRenewableSurcharge(usage, formData.year, formData.month);
+      incentiveResult = await calculateIncentive({
+        tradeId,
+        region: formData.region,
+        contractCapacity,
+        usage,
+        year: formData.year,
+        month: formData.month,
+        governmentSupport,
+        contractType: formData.contractType,
+        contractCategory: formData.contractCategory,
+        isZeroUsage
+      });
+    }
+
+    // 使用量が0の場合の基本料金半額処理
+    let finalTakusoBasic = takusoBasicResult.amount;
+    let finalCapacityContribution = capacityContributionResult.amount;
+    
+         if (isZeroUsage) {
+       finalTakusoBasic = takusoBasicResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
+       finalCapacityContribution = capacityContributionResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
+     }
 
     // 小計を計算
-    const subtotal = takusoBasicResult.amount + capacityContributionResult.amount + powerSourceResult.amount + 
+    const subtotal = finalTakusoBasic + finalCapacityContribution + powerSourceResult.amount + 
                     serviceChargeResult.amount + takusoVolumeResult.amount + renewableSurchargeResult.amount;
     
     // 政府支援を計算
-    const governmentSupportAmount = governmentSupport * usage;
+    // 使用量が0の場合、政府支援も0に設定
+    let governmentSupportAmount = governmentSupport * usage;
     
-    // 合計を計算
+         if (isZeroUsage) {
+       governmentSupportAmount = 0;
+     }
+    
+    // 合計を計算（インセンティブは別途表示するため小計には含めない）
     const total = subtotal - governmentSupportAmount;
 
     return {
       tradeName,
-      takusoBasic: Math.floor(takusoBasicResult.amount),
-      capacityContribution: Math.floor(capacityContributionResult.amount),
+      takusoBasic: Math.floor(finalTakusoBasic),
+      capacityContribution: Math.floor(finalCapacityContribution),
       powerSource: Math.floor(powerSourceResult.amount),
       serviceCharge: Math.floor(serviceChargeResult.amount),
       takusoVolume: Math.floor(takusoVolumeResult.amount),
       renewableSurcharge: Math.floor(renewableSurchargeResult.amount),
+      incentive: Math.floor(incentiveResult.amount),
       subtotal: Math.floor(subtotal),
       governmentSupport: Math.floor(governmentSupportAmount),
       total: Math.floor(subtotal - governmentSupportAmount),
@@ -790,48 +986,71 @@ const SimulationForm: React.FC = () => {
         powerSource: powerSourceResult.details,
         serviceCharge: serviceChargeResult.details,
         takusoVolume: takusoVolumeResult.details,
-        renewableSurcharge: renewableSurchargeResult.details
+        renewableSurcharge: renewableSurchargeResult.details,
+        incentive: incentiveResult.details
       }
     };
-  };
+  }, [
+    formData.contractType,
+    formData.contractCategory,
+    formData.region,
+    formData.usage,
+    formData.year,
+    formData.month,
+    formData.governmentSupport,
+    formData.contractCapacity,
+    isZeroUsage,
+    getContractCapacity,
+    calculateTakusoBasic,
+    calculateCapacityContribution,
+    calculatePowerSource,
+    calculateServiceCharge,
+    calculateTakusoVolume,
+    calculateRenewableSurcharge,
+    calculateIncentive
+  ]);
 
-  // 計算実行関数
-  const handleCalculate = async () => {
+  // 計算実行関数（並列処理対応）
+  const handleCalculate = useCallback(async () => {
     setIsCalculating(true);
     setError('');
     setCalculationResults([]);
 
     try {
-      const results: CalculationResult[] = [];
-      
-      // 全ての商流で計算を実行
-      for (const trade of tradeList) {
+      // 並列処理で全ての商流の計算を実行
+      const calculationPromises = tradeList.map(async (trade) => {
         try {
-          const result = await calculateForTrade(trade);
-          results.push(result);
+          return await calculateForTrade(trade);
         } catch (error: any) {
           console.error(`${trade.tradeName}の計算でエラー:`, error);
-          // エラーが発生した商流はスキップして続行
+          return null; // エラーが発生した商流はnullを返す
         }
-      }
+      });
 
-      if (results.length === 0) {
+      // 全ての計算が完了するまで待機
+      const results = await Promise.all(calculationPromises);
+      
+      // nullを除外して有効な結果のみを抽出
+      const validResults = results.filter((result): result is CalculationResult => result !== null);
+
+      if (validResults.length === 0) {
         throw new Error('計算可能な商流が見つかりませんでした');
       }
 
       // 合計金額でソート（安い順）
-      results.sort((a, b) => a.total - b.total);
+      validResults.sort((a, b) => a.total - b.total);
       
-      setCalculationResults(results);
+      setCalculationResults(validResults);
 
     } catch (error: any) {
       setError(error.message || '計算中にエラーが発生しました');
     } finally {
       setIsCalculating(false);
     }
-  };
+  }, [tradeList, calculateForTrade]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  // 入力変更ハンドラー
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData(prev => {
       const newData = {
@@ -841,29 +1060,61 @@ const SimulationForm: React.FC = () => {
       
       // 契約カテゴリが変更された場合の処理
       if (name === 'contractCategory') {
-        if (value === 'A') {
+        if (value === CONSTANTS.CONTRACT_CATEGORIES.A) {
           // 従量Aの場合は契約容量を6kWに固定
-          newData.contractCapacity = '6';
-        } else if (value === 'B' && prev.contractCategory === 'A') {
+          newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_A.toString();
+        } else if (value === CONSTANTS.CONTRACT_CATEGORIES.B && prev.contractCategory === CONSTANTS.CONTRACT_CATEGORIES.A) {
           // 従量AからBに変更した場合は8kWに設定
-          newData.contractCapacity = '8';
-        } else if (value === 'C' && prev.contractCategory === 'A') {
+          newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_B.toString();
+        } else if (value === CONSTANTS.CONTRACT_CATEGORIES.C && prev.contractCategory === CONSTANTS.CONTRACT_CATEGORIES.A) {
           // 従量AからCに変更した場合は10kWに設定
-          newData.contractCapacity = '10';
+          newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_C.toString();
         }
       }
       
       // 契約種別が変更された場合の処理
       if (name === 'contractType') {
-        if (value === '動力') {
-          // 動力の場合は契約容量を8kWに設定
-          newData.contractCapacity = '8';
-        }
+        // if (value === CONSTANTS.CONTRACT_TYPES.POWER) {
+        //   // 動力の場合は契約容量を8kWに設定
+        //   newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_POWER.toString();
+        // }
       }
       
       return newData;
     });
-  };
+  }, []);
+
+  // 使用量0フラグの変更ハンドラー
+  const handleZeroUsageChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setIsZeroUsage(e.target.checked);
+  }, []);
+
+  // 詳細表示の変更ハンドラー
+  const handleShowDetailsChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setShowDetails(e.target.checked);
+  }, []);
+
+  // 現在価格の計算
+  const currentPrice = useMemo(() => parseFloat(formData.currentPrice) || 0, [formData.currentPrice]);
+
+  // 地域オプションの配列
+  const regionOptions = useMemo(() => Object.values(CONSTANTS.REGIONS), []);
+
+  // 年オプションの配列（2025年から現在の年まで）
+  const yearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const startYear = 2025;
+    const years: string[] = [];
+    for (let year = startYear; year <= currentYear; year++) {
+      years.push(year.toString());
+    }
+    return years;
+  }, []);
+
+  // 月オプションの配列
+  const monthOptions = useMemo(() => Array.from({ length: 12 }, (_, i) => (i + 1).toString()), []);
+
+
 
   return (
     <Container>
@@ -874,33 +1125,26 @@ const SimulationForm: React.FC = () => {
       <form>
         <Row>
           <Select name="contractType" value={formData.contractType} onChange={handleInputChange}>
-            <option>従量</option>
-            <option>動力</option>
+            <option>{CONSTANTS.CONTRACT_TYPES.VOLUME}</option>
+            {/* <option>{CONSTANTS.CONTRACT_TYPES.POWER}</option> */}
           </Select>
-          {formData.contractType === '従量' && (
-            <Select name="contractCategory" value={formData.contractCategory} onChange={handleInputChange}>
-              <option>A</option>
-              <option>B</option>
-              <option>C</option>
-            </Select>
-          )}
+          {/* 動力の選択肢をコメントアウトしたため、常に従量カテゴリを表示 */}
+          <Select name="contractCategory" value={formData.contractCategory} onChange={handleInputChange}>
+            <option>{CONSTANTS.CONTRACT_CATEGORIES.A}</option>
+            <option>{CONSTANTS.CONTRACT_CATEGORIES.B}</option>
+            <option>{CONSTANTS.CONTRACT_CATEGORIES.C}</option>
+          </Select>
           <Label>地域</Label>
           <Select name="region" value={formData.region} onChange={handleInputChange}>
-            <option>関西</option>
-            <option>関東</option>
-            <option>中部</option>
-            <option>九州</option>
-            <option>北海道</option>
-            <option>東北</option>
-            <option>中国</option>
-            <option>四国</option>
-            <option>北陸</option>
+            {regionOptions.map(region => (
+              <option key={region} value={region}>{region}</option>
+            ))}
           </Select>
         </Row>
         <Row>
           <Label>契約容量</Label>
-          {formData.contractType === '従量' && formData.contractCategory === 'A' ? (
-            <span style={{ fontSize: '1rem', color: '#666' }}>6kW</span>
+          {formData.contractCategory === CONSTANTS.CONTRACT_CATEGORIES.A ? (
+            <span style={{ fontSize: '1rem', color: '#666' }}>{CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_A}kW</span>
           ) : (
             <>
               <Input 
@@ -926,7 +1170,12 @@ const SimulationForm: React.FC = () => {
             onChange={handleInputChange}
           />
           <span>kwh</span>
-          <Checkbox type="checkbox" id="zero" />
+          <Checkbox 
+            type="checkbox" 
+            id="zero" 
+            checked={isZeroUsage}
+            onChange={handleZeroUsageChange}
+          />
           <Label htmlFor="zero" style={{ minWidth: 'auto', fontSize: '0.95rem' }}>使用量が0の場合</Label>
         </Row>
         <Row>
@@ -942,23 +1191,15 @@ const SimulationForm: React.FC = () => {
         </Row>
         <Row>
           <Select style={{ width: '80px' }} name="year" value={formData.year} onChange={handleInputChange}>
-            <option>2025</option>
-            <option>2024</option>
+            {yearOptions.map(year => (
+              <option key={year} value={year}>{year}</option>
+            ))}
           </Select>
           <span>年</span>
           <Select style={{ width: '60px' }} name="month" value={formData.month} onChange={handleInputChange}>
-            <option>1</option>
-            <option>2</option>
-            <option>3</option>
-            <option>4</option>
-            <option>5</option>
-            <option>6</option>
-            <option>7</option>
-            <option>8</option>
-            <option>9</option>
-            <option>10</option>
-            <option>11</option>
-            <option>12</option>
+            {monthOptions.map(month => (
+              <option key={month} value={month}>{month}</option>
+            ))}
           </Select>
           <span>月</span>
           <Label style={{ minWidth: 'auto' }}>政府支援</Label>
@@ -972,7 +1213,7 @@ const SimulationForm: React.FC = () => {
           />
           <span>円</span>
         </Row>
-        <Row>
+        {/* <Row>
           <Label style={{ minWidth: '40px' }}>朝</Label>
           <SmallInput 
             type="number" 
@@ -1003,7 +1244,7 @@ const SimulationForm: React.FC = () => {
             onChange={handleInputChange}
           />
           <span>%</span>
-        </Row>
+        </Row> */}
         <Row>
           <Label style={{ minWidth: 'auto' }}>検針日</Label>
           <DateInput 
@@ -1025,12 +1266,12 @@ const SimulationForm: React.FC = () => {
         </Button>
       </form>
 
-      {isCalculating && (
-        <LoadingMessage>データを取得して計算中です...</LoadingMessage>
+      {isLoading && (
+        <LoadingMessage>商流一覧を読み込み中...</LoadingMessage>
       )}
 
-      {error && (
-        <ErrorMessage>{error}</ErrorMessage>
+      {tradeError && (
+        <ErrorMessage>{tradeError}</ErrorMessage>
       )}
 
       {calculationResults.length > 0 && (
@@ -1040,11 +1281,11 @@ const SimulationForm: React.FC = () => {
             <SwitchContainer>
               <FormControlLabel
                 control={
-                  <Switch
-                    checked={showDetails}
-                    onChange={(e) => setShowDetails(e.target.checked)}
-                    size="small"
-                  />
+                                  <Switch
+                  checked={showDetails}
+                  onChange={handleShowDetailsChange}
+                  size="small"
+                />
                 }
                 label="詳細表示"
                 labelPlacement="start"
@@ -1053,7 +1294,6 @@ const SimulationForm: React.FC = () => {
           </ResultHeader>
           
           {calculationResults.map((result, index) => {
-            const currentPrice = parseFloat(formData.currentPrice) || 0;
             const isSavings = result.total < currentPrice;
             
             return (
@@ -1062,6 +1302,9 @@ const SimulationForm: React.FC = () => {
                   <SavingsTradeResultHeader onClick={() => toggleTradeExpansion(result.tradeName)}>
                     <ResultLabel>
                       {result.tradeName}
+                      <span style={{ marginLeft: '0.5rem', fontSize: '0.9rem', color: '#2e7d32' }}>
+                        ({result.incentive.toLocaleString()}円)
+                      </span>
                     </ResultLabel>
                     <div style={{ display: 'flex', alignItems: 'center' }}>
                       <SavingsResultValue>{result.total.toLocaleString()}円</SavingsResultValue>
@@ -1072,7 +1315,12 @@ const SimulationForm: React.FC = () => {
                   </SavingsTradeResultHeader>
                 ) : (
                   <TradeResultHeader onClick={() => toggleTradeExpansion(result.tradeName)}>
-                    <ResultLabel>{result.tradeName}</ResultLabel>
+                    <ResultLabel>
+                      {result.tradeName}
+                      <span style={{ marginLeft: '0.5rem', fontSize: '0.9rem', color: '#2e7d32' }}>
+                        ({result.incentive.toLocaleString()}円)
+                      </span>
+                    </ResultLabel>
                     <div style={{ display: 'flex', alignItems: 'center' }}>
                       <ResultValue>{result.total.toLocaleString()}円</ResultValue>
                       <ExpandButton size="small">
@@ -1082,7 +1330,7 @@ const SimulationForm: React.FC = () => {
                   </TradeResultHeader>
                 )}
               
-              <TradeResultContent isExpanded={expandedTrades.has(result.tradeName)}>
+                             <TradeResultContent $isExpanded={expandedTrades.has(result.tradeName)}>
                 <TradeResultDetails>
                   <ResultRow>
                     <ResultLabel>①託送基本料</ResultLabel>
@@ -1102,6 +1350,7 @@ const SimulationForm: React.FC = () => {
                           </DetailRow>
                           <CalculationFormula>
                             {result.details.takusoBasic.basicPrice}円/kW × {result.details.takusoBasic.contractCapacity}kW = {result.takusoBasic.toLocaleString()}円
+                            {isZeroUsage && ' (使用量0のため半額)'}
                           </CalculationFormula>
                         </>
                       ) : (
@@ -1116,6 +1365,7 @@ const SimulationForm: React.FC = () => {
                           </DetailRow>
                           <CalculationFormula>
                             {result.details.takusoBasic.basicPriceFirst6kw}円 + {result.details.takusoBasic.basicPriceOver6kw}円/kW × ({result.details.takusoBasic.contractCapacity}kW - 6kW) = {result.takusoBasic.toLocaleString()}円
+                            {isZeroUsage && ' (使用量0のため半額)'}
                           </CalculationFormula>
                         </>
                       )}
@@ -1138,6 +1388,7 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <CalculationFormula>
                         {result.details.capacityContribution.price}円/kW × {result.details.capacityContribution.contractCapacity}kW = {result.capacityContribution.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため半額)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
@@ -1161,7 +1412,8 @@ const SimulationForm: React.FC = () => {
                         <DetailValue>{result.details.powerSource.usage}kWh</DetailValue>
                       </DetailRow>
                       <CalculationFormula>
-                        ({result.details.powerSource.jepxPrice}円/kWh × (1 - {result.details.powerSource.areaLossRate / 100}) × {result.details.powerSource.usage}kWh) × 1.1 = {result.powerSource.toLocaleString()}円
+                        ({result.details.powerSource.usage}kWh × {result.details.powerSource.jepxPrice}円/kWh ÷ (1 - {result.details.powerSource.areaLossRate / 100})) × 1.1 = {result.powerSource.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
@@ -1182,6 +1434,7 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <CalculationFormula>
                         {result.details.serviceCharge.price}円/kWh × {result.details.serviceCharge.usage}kWh = {result.serviceCharge.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
@@ -1202,6 +1455,7 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <CalculationFormula>
                         {result.details.takusoVolume.price}円/kWh × {result.details.takusoVolume.usage}kWh = {result.takusoVolume.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
@@ -1222,6 +1476,7 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <CalculationFormula>
                         {result.details.renewableSurcharge.price}円/kWh × {result.details.renewableSurcharge.usage}kWh = {result.renewableSurcharge.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
@@ -1254,18 +1509,44 @@ const SimulationForm: React.FC = () => {
                       </DetailRow>
                       <CalculationFormula>
                         {formData.governmentSupport}円/kWh × {formData.usage}kWh = {result.governmentSupport.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
 
                   <TotalRow>
-                    <ResultLabel>⑧合計金額</ResultLabel>
+                    <ResultLabel>⑨合計金額</ResultLabel>
                     <ResultValue>{result.total.toLocaleString()}円</ResultValue>
                   </TotalRow>
                   {showDetails && (
                     <DetailContainer>
                       <CalculationFormula>
                         {result.subtotal.toLocaleString()}円 - {result.governmentSupport.toLocaleString()}円 = {result.total.toLocaleString()}円
+                      </CalculationFormula>
+                    </DetailContainer>
+                  )}
+
+                  <ResultRow>
+                    <ResultLabel>インセンティブ</ResultLabel>
+                    <ResultValue style={{ color: '#2e7d32' }}>{result.incentive.toLocaleString()}円</ResultValue>
+                  </ResultRow>
+                  {showDetails && (
+                    <DetailContainer>
+                      <DetailRow>
+                        <DetailLabel>{formData.month}月の指数:</DetailLabel>
+                        <DetailValue>{result.details.incentive.monthlyIndex}</DetailValue>
+                      </DetailRow>
+                      <DetailRow>
+                        <DetailLabel>獲得件数:</DetailLabel>
+                        <DetailValue>{result.details.incentive.acquiredUnits.toFixed(2)}件</DetailValue>
+                      </DetailRow>
+                      <DetailRow>
+                        <DetailLabel>手数料:</DetailLabel>
+                        <DetailValue>{result.details.incentive.fee}円</DetailValue>
+                      </DetailRow>
+                      <CalculationFormula>
+                        {formData.usage}kWh × {result.details.incentive.monthlyIndex} = {result.details.incentive.acquiredUnits.toFixed(2)}件 → {result.incentive.toLocaleString()}円
+                        {isZeroUsage && ' (使用量0のため0円)'}
                       </CalculationFormula>
                     </DetailContainer>
                   )}
