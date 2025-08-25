@@ -20,10 +20,11 @@ const LoginForm = styled.form`
   max-width: 400px;
 `;
 
-const Title = styled.h1`
-  text-align: center;
-  color: #333;
-  margin-bottom: 2rem;
+const Logo = styled.img`
+  display: block;
+  margin: 0 auto 2rem auto;
+  max-width: 200px;
+  height: auto;
 `;
 
 const Input = styled.input`
@@ -96,7 +97,7 @@ const Login: React.FC = () => {
   return (
     <LoginContainer>
       <LoginForm onSubmit={handleSubmit}>
-        <Title>電気シミュレーター</Title>
+        <Logo src="/denki_text_logo.png" alt="電気シミュレーター" />
         <Input
           type="text"
           placeholder="ID"

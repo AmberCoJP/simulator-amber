@@ -1,15 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import styled from 'styled-components';
-import { collection, addDoc, serverTimestamp, getDocs, query, orderBy, updateDoc, doc, setDoc, where, getDoc } from 'firebase/firestore';
-import { db } from '../firebase/index.ts';
-import { OPTION_LIST, CONTRACT_TYPE_LIST, REGION_LIST } from '../constants/index.ts';
+import { OPTION_LIST, CONTRACT_TYPE_LIST, REGION_LIST, MONTH_LIST, INCENTIVE_FEE_TABLE } from '../constants/index.ts';
 import IconButton from '@mui/material/IconButton';
 import EditIcon from '@mui/icons-material/Edit';
-import PauseIcon from '@mui/icons-material/Pause';
+import DeleteIcon from '@mui/icons-material/Delete';
+import { useDataManagement, useModalData } from '../hooks/useDataManagement.ts';
+import { DataType } from '../types/index.ts';
+import { validateDataByType, formatValidationErrors } from '../utils/validation.ts';
 
 const DataEntryContainer = styled.div`
   padding: 2rem;
-  max-width: 1300px;
+  max-width: 1580px;
   margin: 0 auto;
 `;
 
@@ -134,6 +135,7 @@ const DataTable = styled.table`
   width: 100%;
   border-collapse: collapse;
   margin-top: 1rem;
+  table-layout: fixed;
 `;
 
 const TableHeader = styled.th`
@@ -167,41 +169,65 @@ const DataEntry: React.FC = () => {
     buildingType: '',
   });
 
-  const [modalData, setModalData] = useState({
-    tradeName: '',
-    registrationDate: '',
-    iconImage: null as File | null,
-    // 燃料調整費用のフィールド
-    flow: '',
-    region: '',
-    contract: '',
-    areaLossRate: '',
-    startDate: '',
-    // 託送料金用のフィールド
-    basicPrice: '',
-    basicPriceFirst6kw: '',
-    basicPriceOver6kw: '',
-    basicPriceType: 'per_kw', // 'per_kw' または 'tiered'
-    volumePrice: '',
-    // 容量拠出金用のフィールド
-    price: '',
-    // サービス料用のフィールド
-    servicePrice: '',
-  });
-
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [registeredData, setRegisteredData] = useState<any[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [csvData, setCsvData] = useState<any[]>([]);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [tradeList, setTradeList] = useState<any[]>([]);
-  const [tradeNameMap, setTradeNameMap] = useState<{[key: string]: string}>({});
+
+  // カスタムフックを使用
+  const { modalData, updateModalData, resetModalData, setModalDataForEdit } = useModalData();
+  
+  // フォームデータからDataTypeを取得
+  const getDataTypeFromFormData = useCallback((buildingType: string): DataType => {
+    switch (buildingType) {
+      case 'trade_name':
+        return DataType.TRADE_NAME;
+      case 'jepx':
+        return DataType.JEPX;
+      case 'fuel_adjustment':
+        return DataType.FUEL_ADJUSTMENT;
+      case 'takuso_price':
+        return DataType.TAKUSO_PRICE;
+      case 'capacity_contribution':
+        return DataType.CAPACITY_CONTRIBUTION;
+      case 'service_charge':
+        return DataType.SERVICE_CHARGE;
+      case 'renewable_surcharge':
+        return DataType.RENEWABLE_SURCHARGE;
+      case 'incentive':
+        return DataType.INCENTIVE;
+      default:
+        return DataType.TRADE_NAME;
+    }
+  }, []);
+
+  // データ管理フック
+  const { 
+    data: registeredData, 
+    isLoading, 
+    error, 
+    refreshData, 
+    createData, 
+    updateData,
+    deleteData
+  } = useDataManagement({ 
+    dataType: getDataTypeFromFormData(formData.buildingType),
+    startDate,
+    endDate
+  });
+
+  // 商流一覧データ管理
+  const { data: tradeList } = useDataManagement({ 
+    dataType: DataType.TRADE_NAME 
+  });
+
+
 
   // 商流IDから商流名を取得する関数
   const getTradeNameById = (tradeId: string) => {
-    return tradeNameMap[tradeId] || '不明な商流';
+    const trade = tradeList.find(t => t.tradeId === tradeId || t.id === tradeId);
+    return trade ? trade.tradeName : '不明な商流';
   };
 
   // 地域IDから地域名を取得する関数
@@ -210,209 +236,12 @@ const DataEntry: React.FC = () => {
     return region ? region.label : regionId;
   };
 
-  // 登録済みデータを取得
-  const fetchRegisteredData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'trend'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('データ取得エラー:', error);
-      alert('データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Jepxデータ用: 日付範囲で取得
-  const fetchJepxData = async () => {
-    if (!startDate || !endDate) {
-      // 日付が指定されていない場合は全データを取得
-      setIsLoading(true);
-      try {
-        const q = query(collection(db, 'jepx_monthly_data'), orderBy('date', 'desc'));
-        const querySnapshot = await getDocs(q);
-        const data = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        setRegisteredData(data);
-      } catch (error) {
-        alert('Jepxデータの取得に失敗しました');
-      } finally {
-        setIsLoading(false);
-      }
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const q = query(
-        collection(db, 'jepx_monthly_data'),
-        where('date', '>=', startDate),
-        where('date', '<=', endDate),
-        orderBy('date', 'asc')
-      );
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      alert('Jepxデータの取得に失敗しました');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 燃料調整費データ用: データ取得
-  const fetchFuelAdjustmentData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'fuel_adjustment'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('燃料調整費データ取得エラー:', error);
-      alert('燃料調整費データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 託送料金データ用: データ取得
-  const fetchTakusoPriceData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'takuso_price'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('託送料金データ取得エラー:', error);
-      alert('託送料金データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 容量拠出金データ用: データ取得
-  const fetchYoryoPriceData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'yoryo_price'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('容量拠出金データ取得エラー:', error);
-      alert('容量拠出金データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // サービス料データ用: データ取得
-  const fetchServiceChargeData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'service_charge'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('サービス料データ取得エラー:', error);
-      alert('サービス料データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 再エネ賦課金データ用: データ取得
-  const fetchRenewableSurchargeData = async () => {
-    setIsLoading(true);
-    try {
-      const q = query(collection(db, 'renewable_surcharge'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
-      setRegisteredData(data);
-    } catch (error) {
-      console.error('再エネ賦課金データ取得エラー:', error);
-      alert('再エネ賦課金データの取得に失敗しました。');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 商流一覧を取得
-  const fetchTradeList = async () => {
-    try {
-      const q = query(collection(db, 'trend'), orderBy('tradeName', 'asc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as any[];
-      setTradeList(data);
-      
-      // IDと商流名のマッピングを作成
-      const nameMap: {[key: string]: string} = {};
-      data.forEach(trade => {
-        nameMap[trade.tradeId || trade.id] = trade.tradeName;
-      });
-      setTradeNameMap(nameMap);
-    } catch (error) {
-      console.error('商流一覧取得エラー:', error);
-    }
-  };
-
-  // コンポーネントマウント時にデータを取得
-  useEffect(() => {
-    fetchRegisteredData();
-    fetchTradeList();
-  }, []);
-
   // データ名が変更された時にデータを再取得
   useEffect(() => {
     if (formData.buildingType) {
-      if (isJepxDataSelected) {
-        fetchJepxData();
-      } else if (isFuelAdjustment) {
-        fetchFuelAdjustmentData();
-      } else if (isTakusoPrice) {
-        fetchTakusoPriceData();
-      } else if (isYoryoPrice) {
-        fetchYoryoPriceData();
-      } else if (isServiceCharge) {
-        fetchServiceChargeData();
-      } else if (isRenewableSurcharge) {
-        fetchRenewableSurchargeData();
-      } else {
-        fetchRegisteredData();
-      }
+      refreshData();
     }
-  }, [formData.buildingType, startDate, endDate]);
+  }, [formData.buildingType, startDate, endDate, refreshData]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -424,18 +253,35 @@ const DataEntry: React.FC = () => {
 
   const handleModalChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
+    console.log('handleModalChange:', { name, value });
+    
     if (name === 'iconImage' && e.target instanceof HTMLInputElement && e.target.files) {
-      setModalData(prev => ({
-        ...prev,
-        [name]: (e.target as HTMLInputElement).files![0]
-      }));
+      updateModalData(name, (e.target as HTMLInputElement).files![0]);
     } else if (name === 'csvFile' && e.target instanceof HTMLInputElement && e.target.files) {
       handleCsvFileUpload((e.target as HTMLInputElement).files![0]);
+    } else if (name.startsWith('monthlyIndex_')) {
+      // 月次指数の処理
+      const month = name.replace('monthlyIndex_', '');
+      const currentIndices = modalData.monthlyIndices || {};
+      updateModalData('monthlyIndices', {
+        ...currentIndices,
+        [month]: value
+      });
+    } else if (name.startsWith('feeTable_')) {
+      // 手数料テーブルの処理
+      const [field, index] = name.replace('feeTable_', '').split('_');
+      const currentFeeTable = modalData.feeTable || [];
+      const updatedFeeTable = [...currentFeeTable];
+      if (!updatedFeeTable[index]) {
+        updatedFeeTable[index] = { kwhRange: '', minKwh: '', maxKwh: '', fee: '' };
+      }
+      updatedFeeTable[index] = {
+        ...updatedFeeTable[index],
+        [field]: value
+      };
+      updateModalData('feeTable', updatedFeeTable);
     } else {
-      setModalData(prev => ({
-        ...prev,
-        [name]: value
-      }));
+      updateModalData(name as keyof typeof modalData, value);
     }
   };
 
@@ -506,375 +352,248 @@ const DataEntry: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (isBusinessFlowSelected) {
-      try {
+    const dataType = getDataTypeFromFormData(formData.buildingType);
+    
+    try {
+      if (isBusinessFlowSelected) {
+        // 商流データの処理
+        const tradeData = {
+          tradeName: modalData.tradeName,
+          registrationDate: modalData.registrationDate || new Date().toISOString().split('T')[0],
+          iconImage: modalData.iconImage ? modalData.iconImage.name : null,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.TRADE_NAME, tradeData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc - 既存のドキュメントIDを使用
-          const ref = doc(db, 'trend', editId);
-          await updateDoc(ref, {
-            tradeName: modalData.tradeName,
-            registrationDate: modalData.registrationDate || new Date().toISOString().split('T')[0],
-            iconImage: modalData.iconImage ? modalData.iconImage.name : null,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, tradeData);
           alert('データを更新しました');
         } else {
-          // 新規登録 - 自動生成IDを使用し、そのIDを商流IDとして保存
-          const trendData = {
-            tradeId: '', // 後で設定
-            tradeName: modalData.tradeName,
-            registrationDate: modalData.registrationDate || new Date().toISOString().split('T')[0],
-            iconImage: modalData.iconImage ? modalData.iconImage.name : null,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          const docRef = await addDoc(collection(db, 'trend'), trendData);
-          
-          // 生成されたIDを商流IDとして更新
-          await updateDoc(docRef, {
-            tradeId: docRef.id
-          });
-          
+          await createData(tradeData);
           alert('商流一覧データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('データ保存エラー詳細:', error);
-        console.error('エラーコード:', error.code);
-        console.error('エラーメッセージ:', error.message);
-        console.error('エラー詳細:', error.details);
-        
-        let errorMessage = 'データの保存に失敗しました。';
-        if (error.code === 'permission-denied') {
-          errorMessage = '権限が不足しています。Firebaseコンソールでセキュリティルールを確認してください。';
-        } else if (error.code === 'unavailable') {
-          errorMessage = 'Firebaseサービスが利用できません。ネットワーク接続を確認してください。';
-        } else if (error.code === 'unauthenticated') {
-          errorMessage = '認証が必要です。ログインしてください。';
+      } else if (isJepxDataSelected) {
+        // Jepxデータの場合の処理
+        if (csvData.length === 0) {
+          alert('CSVファイルを選択してください。');
+          return;
         }
-        
-        alert(errorMessage);
-      }
-    } else if (isJepxDataSelected) {
-      // Jepxデータの場合の処理（日毎に保存）
-      if (csvData.length === 0) {
-        alert('CSVファイルを選択してください。');
-        return;
-      }
-      try {
-        // Firestoreに日毎で保存
-        for (const daily of csvData) {
-          await setDoc(
-            doc(collection(db, 'jepx_daily_data'), daily.date),
-            {
-              ...daily,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp()
-            }
-          );
-        }
+        await createData(csvData);
         alert('Jepxデータ（日毎）が正常に登録されました。');
-        setFormData({
-          buildingType: '',
-        });
+        setFormData({ buildingType: '' });
         setCsvData([]);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('Jepxデータ保存エラー:', error);
-        alert('Jepxデータの保存に失敗しました。');
-      }
-    } else if (isFuelAdjustment) {
-      // 燃料調整費データの処理
-      try {
+      } else if (isFuelAdjustment) {
+        // 燃料調整費データの処理
+        const fuelData = {
+          tradeId: modalData.flow,
+          region: modalData.region,
+          contract: modalData.contract,
+          areaLossRate: parseFloat(modalData.areaLossRate),
+          startDate: modalData.startDate,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.FUEL_ADJUSTMENT, fuelData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc
-          const ref = doc(db, 'fuel_adjustment', editId);
-          await updateDoc(ref, {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            areaLossRate: parseFloat(modalData.areaLossRate),
-            startDate: modalData.startDate,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, fuelData);
           alert('燃料調整費データを更新しました');
         } else {
-          // 新規登録
-          const fuelAdjustmentData = {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            areaLossRate: parseFloat(modalData.areaLossRate),
-            startDate: modalData.startDate,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          await addDoc(collection(db, 'fuel_adjustment'), fuelAdjustmentData);
+          await createData(fuelData);
           alert('燃料調整費データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('燃料調整費データ保存エラー:', error);
-        alert('燃料調整費データの保存に失敗しました。');
-      }
-    } else if (isTakusoPrice) {
-      // 託送料金データの処理
-      try {
+      } else if (isTakusoPrice) {
+        // 託送料金データの処理
+        const takusoData = {
+          tradeId: modalData.flow,
+          region: modalData.region,
+          contract: modalData.contract,
+          basicPriceType: modalData.basicPriceType,
+          basicPrice: modalData.basicPriceType === 'per_kw' ? parseFloat(modalData.basicPrice) : undefined,
+          basicPriceFirst6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceFirst6kw) : undefined,
+          basicPriceOver6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceOver6kw) : undefined,
+          volumePrice: parseFloat(modalData.volumePrice),
+          startDate: modalData.startDate,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.TAKUSO_PRICE, takusoData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc
-          const ref = doc(db, 'takuso_price', editId);
-          await updateDoc(ref, {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            basicPrice: modalData.basicPriceType === 'per_kw' ? parseFloat(modalData.basicPrice) : '',
-            basicPriceFirst6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceFirst6kw) : '',
-            basicPriceOver6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceOver6kw) : '',
-            basicPriceType: modalData.basicPriceType,
-            volumePrice: parseFloat(modalData.volumePrice),
-            startDate: modalData.startDate,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, takusoData);
           alert('託送料金データを更新しました');
         } else {
-          // 新規登録
-          const takusoPriceData = {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            basicPrice: modalData.basicPriceType === 'per_kw' ? parseFloat(modalData.basicPrice) : '',
-            basicPriceFirst6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceFirst6kw) : '',
-            basicPriceOver6kw: modalData.basicPriceType === 'tiered' ? parseFloat(modalData.basicPriceOver6kw) : '',
-            basicPriceType: modalData.basicPriceType,
-            volumePrice: parseFloat(modalData.volumePrice),
-            startDate: modalData.startDate,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          await addDoc(collection(db, 'takuso_price'), takusoPriceData);
+          await createData(takusoData);
           alert('託送料金データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('託送料金データ保存エラー:', error);
-        alert('託送料金データの保存に失敗しました。');
-      }
-    } else if (isYoryoPrice) {
-      // 容量拠出金データの処理
-      try {
+      } else if (isYoryoPrice) {
+        // 容量拠出金データの処理
+        const capacityData = {
+          tradeId: modalData.flow,
+          region: modalData.region,
+          contract: modalData.contract,
+          price: parseFloat(modalData.price),
+          startDate: modalData.startDate,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.CAPACITY_CONTRIBUTION, capacityData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc
-          const ref = doc(db, 'yoryo_price', editId);
-          await updateDoc(ref, {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            price: parseFloat(modalData.price),
-            startDate: modalData.startDate,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, capacityData);
           alert('容量拠出金データを更新しました');
         } else {
-          // 新規登録
-          const yoryoPriceData = {
-            tradeId: modalData.flow, // 商流IDのみ保存
-            region: modalData.region,
-            contract: modalData.contract,
-            price: parseFloat(modalData.price),
-            startDate: modalData.startDate,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          await addDoc(collection(db, 'yoryo_price'), yoryoPriceData);
+          await createData(capacityData);
           alert('容量拠出金データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('容量拠出金データ保存エラー:', error);
-        alert('容量拠出金データの保存に失敗しました。');
-      }
-    } else if (isServiceCharge) {
-      // サービス料データの処理
-      try {
+      } else if (isServiceCharge) {
+        // サービス料データの処理
+        const serviceData = {
+          price: parseFloat(modalData.servicePrice),
+          startDate: modalData.startDate,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.SERVICE_CHARGE, serviceData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc
-          const ref = doc(db, 'service_charge', editId);
-          await updateDoc(ref, {
-            price: parseFloat(modalData.servicePrice),
-            startDate: modalData.startDate,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, serviceData);
           alert('サービス料データを更新しました');
         } else {
-          // 新規登録
-          const serviceChargeData = {
-            price: parseFloat(modalData.servicePrice),
-            startDate: modalData.startDate,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          await addDoc(collection(db, 'service_charge'), serviceChargeData);
+          await createData(serviceData);
           alert('サービス料データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('サービス料データ保存エラー:', error);
-        alert('サービス料データの保存に失敗しました。');
-      }
-    } else if (isRenewableSurcharge) {
-      // 再エネ賦課金データの処理
-      try {
+      } else if (isRenewableSurcharge) {
+        // 再エネ賦課金データの処理
+        const renewableData = {
+          price: parseFloat(modalData.servicePrice),
+          startDate: modalData.startDate,
+        };
+
+        // バリデーション
+        const validation = validateDataByType(DataType.RENEWABLE_SURCHARGE, renewableData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
         if (editId) {
-          // 編集時はupdateDoc
-          const ref = doc(db, 'renewable_surcharge', editId);
-          await updateDoc(ref, {
-            price: parseFloat(modalData.servicePrice),
-            startDate: modalData.startDate,
-            updatedAt: serverTimestamp(),
-          });
+          await updateData(editId, renewableData);
           alert('再エネ賦課金データを更新しました');
         } else {
-          // 新規登録
-          const renewableSurchargeData = {
-            price: parseFloat(modalData.servicePrice),
-            startDate: modalData.startDate,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          await addDoc(collection(db, 'renewable_surcharge'), renewableSurchargeData);
+          await createData(renewableData);
           alert('再エネ賦課金データが正常に登録されました。');
         }
-        setModalData({ 
-          tradeName: '', 
-          registrationDate: '', 
-          iconImage: null,
-          flow: '',
-          region: '',
-          contract: '',
-          areaLossRate: '',
-          startDate: '',
-          basicPrice: '',
-          basicPriceFirst6kw: '',
-          basicPriceOver6kw: '',
-          basicPriceType: 'per_kw',
-          volumePrice: '',
-          price: '',
-          servicePrice: '',
-        });
-        setIsModalOpen(false);
-        setEditId(null);
-        fetchRegisteredData();
-      } catch (error: any) {
-        console.error('再エネ賦課金データ保存エラー:', error);
-        alert('再エネ賦課金データの保存に失敗しました。');
+      } else if (isIncentive) {
+        // インセンティブデータの処理
+        const incentiveData: any = {
+          tradeId: modalData.flow,
+          contract: modalData.contract,
+          monthlyIndices: Object.fromEntries(
+            Object.entries(modalData.monthlyIndices || {}).map(([month, value]) => [
+              month,
+              parseFloat(value as string)
+            ])
+          ),
+          incentiveType: modalData.incentiveType,
+          startDate: modalData.startDate,
+        };
+
+        // インセンティブタイプに応じてデータを設定
+        if (modalData.incentiveType === 'feeTable') {
+          incentiveData.feeTable = (modalData.feeTable || []).map(fee => ({
+            kwhRange: fee.kwhRange,
+            minKwh: parseFloat(fee.minKwh),
+            maxKwh: fee.maxKwh ? parseFloat(fee.maxKwh) : Infinity,
+            fee: parseFloat(fee.fee)
+          }));
+        } else if (modalData.incentiveType === 'flatRate') {
+          console.log('一律料金の処理:', {
+            flatRateFee: modalData.flatRateFee,
+            minimumAcquisition: modalData.minimumAcquisition
+          });
+          incentiveData.flatRate = {
+            fee: modalData.flatRateFee ? parseFloat(modalData.flatRateFee) : 0,
+            minimumAcquisition: modalData.minimumAcquisition ? parseFloat(modalData.minimumAcquisition) : undefined
+          };
+          console.log('作成されたincentiveData:', incentiveData);
+        }
+
+        // バリデーション
+        const validation = validateDataByType(DataType.INCENTIVE, incentiveData);
+        if (!validation.isValid) {
+          alert(formatValidationErrors(validation.errors));
+          return;
+        }
+
+        if (editId) {
+          await updateData(editId, incentiveData);
+          alert('インセンティブデータを更新しました');
+        } else {
+          await createData(incentiveData);
+          alert('インセンティブデータが正常に登録されました。');
+        }
       }
-    } else {
-      // TODO: 通常のデータ登録処理の実装
-      console.log('登録データ:', formData);
+
+      // モーダルをリセット
+      resetModalData();
+      setIsModalOpen(false);
+      setEditId(null);
+      
+    } catch (error: any) {
+      console.error('データ保存エラー:', error);
+      alert(error.message || 'データの保存に失敗しました。');
     }
   };
 
   const openModal = () => {
     setIsModalOpen(true);
+    
+    // インセンティブが選択されている場合、デフォルト値を設定
+    if (isIncentive) {
+      // デフォルトのインセンティブタイプを設定
+      if (!modalData.incentiveType) {
+        updateModalData('incentiveType', 'feeTable');
+      }
+      
+      // 手数料テーブルが未設定の場合、デフォルト値を設定
+      if (modalData.incentiveType === 'feeTable' && (!modalData.feeTable || modalData.feeTable.length === 0)) {
+        const defaultFeeTable = INCENTIVE_FEE_TABLE.map(fee => ({
+          kwhRange: fee.kwhRange,
+          minKwh: fee.minKwh.toString(),
+          maxKwh: fee.maxKwh === Infinity ? '' : fee.maxKwh.toString(),
+          fee: fee.fee.toString()
+        }));
+        updateModalData('feeTable', defaultFeeTable);
+      }
+    }
   };
 
   const closeModal = () => {
     setIsModalOpen(false);
+    resetModalData();
+    setEditId(null);
   };
 
   // 商流一覧が選択されているかどうかをチェック
@@ -898,6 +617,9 @@ const DataEntry: React.FC = () => {
   // 再エネ賦課金が選択されているかどうかをチェック
   const isRenewableSurcharge = formData.buildingType === 'renewable_surcharge';
 
+  // インセンティブが選択されているかどうかをチェック
+  const isIncentive = formData.buildingType === 'incentive';
+
   // 日付をフォーマットする関数
   const formatDate = (timestamp: any) => {
     if (!timestamp) return '-';
@@ -907,31 +629,35 @@ const DataEntry: React.FC = () => {
 
   // 編集ボタンの処理
   const handleEdit = (data: any) => {
-    setModalData({
-      tradeName: data.tradeName || '',
-      registrationDate: data.registrationDate || '',
-      iconImage: null,
-      flow: data.tradeId || '', // 商流IDを設定
-      region: data.region || '',
-      contract: data.contract || '',
-      areaLossRate: data.areaLossRate || '',
-      startDate: data.startDate || '',
-      basicPrice: data.basicPrice || '',
-      basicPriceFirst6kw: data.basicPriceFirst6kw || '',
-      basicPriceOver6kw: data.basicPriceOver6kw || '',
-      basicPriceType: data.basicPriceType || 'per_kw',
-      volumePrice: data.volumePrice || '',
-      price: data.price || '',
-      servicePrice: data.servicePrice || '',
-    });
+    setModalDataForEdit(data);
     setEditId(data.id);
     setIsModalOpen(true);
   };
 
-  // 停止ボタンの処理
-  const handlePause = (data: any) => {
-    alert(`${data.tradeName} を停止します`);
+  // 削除ボタンの処理
+  const handleDelete = async (data: any) => {
+    if (window.confirm(`${data.tradeName || data.id} を削除しますか？`)) {
+      try {
+        await deleteData(data.id);
+        alert('データを削除しました');
+        refreshData();
+      } catch (error: any) {
+        console.error('データ削除エラー:', error);
+        alert(error.message || 'データの削除に失敗しました。');
+      }
+    }
   };
+
+  // エラー表示
+  if (error) {
+    return (
+      <DataEntryContainer>
+        <div style={{ color: 'red', textAlign: 'center', padding: '2rem' }}>
+          エラーが発生しました: {error}
+        </div>
+      </DataEntryContainer>
+    );
+  }
 
   return (
     <DataEntryContainer>
@@ -968,6 +694,7 @@ const DataEntry: React.FC = () => {
            isYoryoPrice ? '容量拠出金データ一覧' :
            isServiceCharge ? 'サービス料データ一覧' :
            isRenewableSurcharge ? '再エネ賦課金データ一覧' :
+           isIncentive ? 'インセンティブデータ一覧' :
            '登録済みデータ一覧'}
         </DataListTitle>
         {isLoading ? (
@@ -1034,6 +761,16 @@ const DataEntry: React.FC = () => {
                     <TableHeader>作成日時</TableHeader>
                     <TableHeader>操作</TableHeader>
                   </>
+                ) : isIncentive ? (
+                  <>
+                    <TableHeader rowSpan={2}>商流</TableHeader>
+                    <TableHeader rowSpan={2}>契約</TableHeader>
+                    <TableHeader colSpan={12} style={{ textAlign: 'center', width: '600px' }}>指数（月毎）</TableHeader>
+                    <TableHeader rowSpan={2}>手数料</TableHeader>
+                    <TableHeader rowSpan={2}>適用開始日</TableHeader>
+                    <TableHeader rowSpan={2}>作成日時</TableHeader>
+                    <TableHeader rowSpan={2}>操作</TableHeader>
+                  </>
                 ) : (
                   <>
                     <TableHeader>商流名</TableHeader>
@@ -1044,6 +781,22 @@ const DataEntry: React.FC = () => {
                   </>
                 )}
               </tr>
+              {isIncentive && (
+                <tr>
+                  <TableHeader>1</TableHeader>
+                  <TableHeader>2</TableHeader>
+                  <TableHeader>3</TableHeader>
+                  <TableHeader>4</TableHeader>
+                  <TableHeader>5</TableHeader>
+                  <TableHeader>6</TableHeader>
+                  <TableHeader>7</TableHeader>
+                  <TableHeader>8</TableHeader>
+                  <TableHeader>9</TableHeader>
+                  <TableHeader>10</TableHeader>
+                  <TableHeader>11</TableHeader>
+                  <TableHeader>12</TableHeader>
+                </tr>
+              )}
             </thead>
             <tbody>
               {registeredData.map((data) => (
@@ -1072,8 +825,8 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1094,8 +847,8 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1111,8 +864,8 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1125,8 +878,8 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1139,8 +892,53 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
+                      </IconButton>
+                    </TableCell>
+                  </TableRow>
+                ) : isIncentive ? (
+                  <TableRow key={data.id}>
+                    <TableCell>{getTradeNameById(data.tradeId) || '-'}</TableCell>
+                    <TableCell>{data.contract || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['1'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['2'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['3'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['4'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['5'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['6'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['7'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['8'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['9'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['10'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['11'] || '-'}</TableCell>
+                    <TableCell>{data.monthlyIndices?.['12'] || '-'}</TableCell>
+                    <TableCell>
+                      <div style={{ fontSize: '0.8rem' }}>
+                        {data.incentiveType === 'flatRate' ? (
+                          <div>
+                            <div>一律料金: {data.flatRate?.fee}円</div>
+                            {data.flatRate?.minimumAcquisition && (
+                              <div>最小獲得件数: {data.flatRate.minimumAcquisition}件</div>
+                            )}
+                          </div>
+                        ) : (
+                          data.feeTable?.map((fee: any, index: number) => (
+                            <div key={index}>
+                              {fee.kwhRange}: {fee.fee}円
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>{data.startDate || '-'}</TableCell>
+                    <TableCell>{formatDate(data.createdAt)}</TableCell>
+                    <TableCell>
+                      <IconButton onClick={() => handleEdit(data)} size="small">
+                        <EditIcon />
+                      </IconButton>
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1154,8 +952,8 @@ const DataEntry: React.FC = () => {
                       <IconButton onClick={() => handleEdit(data)} size="small">
                         <EditIcon />
                       </IconButton>
-                      <IconButton onClick={() => handlePause(data)} size="small">
-                        <PauseIcon />
+                      <IconButton onClick={() => handleDelete(data)} size="small">
+                        <DeleteIcon />
                       </IconButton>
                     </TableCell>
                   </TableRow>
@@ -1180,6 +978,7 @@ const DataEntry: React.FC = () => {
                isYoryoPrice ? '容量拠出金データ登録' :
                isServiceCharge ? 'サービス料データ登録' :
                isRenewableSurcharge ? '再エネ賦課金データ登録' :
+               isIncentive ? 'インセンティブデータ登録' :
                'データ登録'}
             </ModalTitle>
             <Form onSubmit={handleSubmit}>
@@ -1535,6 +1334,193 @@ const DataEntry: React.FC = () => {
                       required
                     />
                   </FormGroup>
+                  <FormGroup>
+                    <Label>適用開始日 *</Label>
+                    <Input
+                      type="date"
+                      name="startDate"
+                      value={modalData.startDate}
+                      onChange={handleModalChange}
+                      required
+                    />
+                  </FormGroup>
+                </>
+              ) : isIncentive ? (
+                <>
+                  <FormGroup>
+                    <Label>商流 *</Label>
+                    <Select
+                      name="flow"
+                      value={modalData.flow}
+                      onChange={handleModalChange}
+                      required
+                    >
+                      <option value="">選択してください</option>
+                      {tradeList.map(trade => (
+                        <option key={trade.id} value={trade.tradeId || trade.id}>
+                          {trade.tradeName}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormGroup>
+                  <FormGroup>
+                    <Label>契約 *</Label>
+                    <Select
+                      name="contract"
+                      value={modalData.contract}
+                      onChange={handleModalChange}
+                      required
+                    >
+                      <option value="">選択してください</option>
+                      {CONTRACT_TYPE_LIST.map(contract => (
+                        <option key={contract.value} value={contract.value}>
+                          {contract.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormGroup>
+                  <FormGroup>
+                    <Label>月次指数 *</Label>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem' }}>
+                      {MONTH_LIST.map(month => (
+                        <div key={month.value}>
+                          <Label style={{ fontSize: '0.9rem' }}>{month.label}</Label>
+                          <Input
+                            type="number"
+                            step="0.01"
+                            name={`monthlyIndex_${month.value}`}
+                            value={modalData.monthlyIndices?.[month.value] || ''}
+                            onChange={handleModalChange}
+                            required
+                            placeholder="指数"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </FormGroup>
+                  <FormGroup>
+                    <Label>インセンティブの設定パターン *</Label>
+                    <Select
+                      name="incentiveType"
+                      value={modalData.incentiveType}
+                      onChange={handleModalChange}
+                      required
+                    >
+                      <option value="">選択してください</option>
+                      <option value="feeTable">手数料テーブル</option>
+                      <option value="flatRate">一律料金</option>
+                    </Select>
+                  </FormGroup>
+                  
+                  {modalData.incentiveType === 'feeTable' && (
+                    <FormGroup>
+                      <Label>手数料テーブル</Label>
+                      <div style={{ marginBottom: '1rem' }}>
+                        <Button 
+                          type="button" 
+                          onClick={() => {
+                            const currentFeeTable = modalData.feeTable || [];
+                            updateModalData('feeTable', [...currentFeeTable, { kwhRange: '', minKwh: '', maxKwh: '', fee: '' }]);
+                          }}
+                          style={{ marginBottom: '1rem' }}
+                        >
+                          手数料項目を追加
+                        </Button>
+                      </div>
+                      {(modalData.feeTable || []).map((fee, index) => (
+                        <div key={index} style={{ border: '1px solid #ddd', padding: '1rem', marginBottom: '1rem', borderRadius: '4px' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+                            <div>
+                              <Label style={{ fontSize: '0.9rem' }}>獲得件数範囲</Label>
+                              <Input
+                                type="text"
+                                name={`feeTable_kwhRange_${index}`}
+                                value={fee.kwhRange}
+                                onChange={handleModalChange}
+                                placeholder="例: 1-199"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <Label style={{ fontSize: '0.9rem' }}>最小kWh</Label>
+                              <Input
+                                type="number"
+                                name={`feeTable_minKwh_${index}`}
+                                value={fee.minKwh}
+                                onChange={handleModalChange}
+                                placeholder="1"
+                                required
+                              />
+                            </div>
+                            <div>
+                              <Label style={{ fontSize: '0.9rem' }}>最大kWh</Label>
+                              <Input
+                                type="number"
+                                name={`feeTable_maxKwh_${index}`}
+                                value={fee.maxKwh}
+                                onChange={handleModalChange}
+                                placeholder="199（空欄で最大値なし）"
+                              />
+                            </div>
+                            <div>
+                              <Label style={{ fontSize: '0.9rem' }}>手数料（円）</Label>
+                              <Input
+                                type="number"
+                                name={`feeTable_fee_${index}`}
+                                value={fee.fee}
+                                onChange={handleModalChange}
+                                placeholder="5800"
+                                required
+                              />
+                            </div>
+                          </div>
+                          <Button 
+                            type="button" 
+                            onClick={() => {
+                              const currentFeeTable = modalData.feeTable || [];
+                              const updatedFeeTable = currentFeeTable.filter((_, i) => i !== index);
+                              updateModalData('feeTable', updatedFeeTable);
+                            }}
+                            style={{ marginTop: '0.5rem', backgroundColor: '#dc3545' }}
+                          >
+                            削除
+                          </Button>
+                        </div>
+                      ))}
+                    </FormGroup>
+                  )}
+                  
+                  {modalData.incentiveType === 'flatRate' && (
+                    <>
+                      <FormGroup>
+                        <Label>一律料金（円） *</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          name="flatRateFee"
+                          value={modalData.flatRateFee}
+                          onChange={handleModalChange}
+                          required
+                          placeholder="例: 5000"
+                        />
+                      </FormGroup>
+                      <FormGroup>
+                        <Label>最小獲得件数（任意）</Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          name="minimumAcquisition"
+                          value={modalData.minimumAcquisition}
+                          onChange={handleModalChange}
+                          placeholder="例: 100（空欄で制限なし）"
+                        />
+                        <div style={{ fontSize: '0.8rem', color: '#666', marginTop: '0.5rem' }}>
+                          この件数以下の場合はインセンティブが適用されません
+                        </div>
+                      </FormGroup>
+                    </>
+                  )}
+                  
                   <FormGroup>
                     <Label>適用開始日 *</Label>
                     <Input
