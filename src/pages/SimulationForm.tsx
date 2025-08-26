@@ -220,7 +220,7 @@ const useTradeData = () => {
   const fetchTradeList = useCallback(async () => {
     setIsLoading(true);
     setError('');
-    
+
     try {
       const q = query(collection(db, 'trend'), orderBy('tradeName', 'asc'));
       const querySnapshot = await getDocs(q);
@@ -228,16 +228,16 @@ const useTradeData = () => {
         id: doc.id,
         ...doc.data()
       })) as Trade[];
-      
+
       setTradeList(data);
-      
+
       // IDと商流名のマッピングを作成
       const nameMap: Record<string, string> = {};
       data.forEach((trade) => {
         nameMap[trade.tradeId || trade.id] = trade.tradeName;
       });
       setTradeNameMap(nameMap);
-      
+
     } catch (error) {
       console.error('商流一覧取得エラー:', error);
       setError('商流一覧の取得に失敗しました');
@@ -262,8 +262,8 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   const getContractCapacity = useCallback((contractType: string, contractCategory: string, contractCapacity: string): number => {
     if (contractType === CONSTANTS.CONTRACT_TYPES.VOLUME && contractCategory === CONSTANTS.CONTRACT_CATEGORIES.A) {
       return CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_A;
-    // } else if (contractType === CONSTANTS.CONTRACT_TYPES.POWER) {
-    //   return CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_POWER;
+      // } else if (contractType === CONSTANTS.CONTRACT_TYPES.POWER) {
+      //   return CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_POWER;
     } else {
       return parseFloat(contractCapacity) || CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_B;
     }
@@ -291,32 +291,32 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
     orderByField?: string
   ) => {
     let q = query(collection(db, collectionName));
-    
+
     conditions.forEach(({ field, operator, value }) => {
       q = query(q, where(field, operator as any, value));
     });
-    
+
     if (orderByField) {
       q = query(q, orderBy(orderByField, 'desc'));
     }
-    
+
     const querySnapshot = await getDocs(q);
-    
+
     if (querySnapshot.empty) {
       throw new Error(`${collectionName}のデータが見つかりません`);
     }
-    
+
     const result = querySnapshot.docs[0].data();
     return result;
   }, []);
 
   // 託送基本料を計算する関数
-  const calculateTakusoBasic = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+  const calculateTakusoBasic = useCallback(async (params: CalculationParams): Promise<{ amount: number, details: any }> => {
     try {
       const contractType = getContractType(params.contractType, params.contractCategory);
       const dbRegion = getDbRegion(params.region);
       const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
-      
+
       const data = await fetchDataFromDb('takuso_price', [
         { field: 'tradeId', operator: '==', value: params.tradeId },
         { field: 'region', operator: '==', value: dbRegion },
@@ -329,7 +329,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
         basicPriceType: data.basicPriceType,
         contractCapacity: params.contractCapacity
       };
-      
+
       if (data.basicPriceType === 'per_kw') {
         amount = parseFloat(data.basicPrice) * params.contractCapacity;
         details.basicPrice = parseFloat(data.basicPrice);
@@ -340,7 +340,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
         details.basicPriceFirst6kw = first6kwPrice;
         details.basicPriceOver6kw = over6kwPrice;
       }
-      
+
       return { amount, details };
     } catch (error) {
       const tradeName = tradeNameMap[params.tradeId] || params.tradeId;
@@ -349,12 +349,12 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
 
   // 容量拠出金を計算する関数
-  const calculateCapacityContribution = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+  const calculateCapacityContribution = useCallback(async (params: CalculationParams): Promise<{ amount: number, details: any }> => {
     try {
       const contractType = getContractType(params.contractType, params.contractCategory);
       const dbRegion = getDbRegion(params.region);
       const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
-      
+
       const data = await fetchDataFromDb('yoryo_price', [
         { field: 'tradeId', operator: '==', value: params.tradeId },
         { field: 'region', operator: '==', value: dbRegion },
@@ -364,9 +364,9 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
 
       const price = parseFloat(data.price);
       const amount = price * params.contractCapacity;
-      
-      return { 
-        amount, 
+
+      return {
+        amount,
         details: { price, contractCapacity: params.contractCapacity }
       };
     } catch (error) {
@@ -376,13 +376,13 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
 
   // 電源料金を計算する関数
-  const calculatePowerSource = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+  const calculatePowerSource = useCallback(async (params: CalculationParams): Promise<{ amount: number, details: any }> => {
     try {
       // Jepx月平均料金を取得
       const jepxData = await fetchDataFromDb('jepx_monthly_data', [
         { field: 'date', operator: '==', value: `${params.year}-${params.month.padStart(2, '0')}` }
       ]);
-      
+
       const areaKey = AREA_KEY_MAP[params.region] || 'kansai';
       const jepxPrice = jepxData.areaAverages[areaKey];
 
@@ -390,7 +390,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
       const contractType = getContractType(params.contractType, params.contractCategory);
       const dbRegion = getDbRegion(params.region);
       const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
-      
+
       const lossData = await fetchDataFromDb('fuel_adjustment', [
         { field: 'tradeId', operator: '==', value: params.tradeId },
         { field: 'region', operator: '==', value: dbRegion },
@@ -400,9 +400,9 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
 
       const areaLossRate = parseFloat(lossData.areaLossRate) / 100;
       const amount = (params.usage * jepxPrice / (1 - areaLossRate)) * CONSTANTS.TAX_RATE;
-      
-      return { 
-        amount, 
+
+      return {
+        amount,
         details: { jepxPrice, areaLossRate: parseFloat(lossData.areaLossRate), usage: params.usage }
       };
     } catch (error) {
@@ -412,7 +412,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
 
   // サービス料を計算する関数
-  const calculateServiceCharge = useCallback(async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculateServiceCharge = useCallback(async (usage: number, year: string, month: string): Promise<{ amount: number, details: any }> => {
     try {
       const startDate = `${year}-${month.padStart(2, '0')}-01`;
       const data = await fetchDataFromDb('service_charge', [
@@ -421,9 +421,9 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
 
       const price = parseFloat(data.price);
       const amount = price * usage;
-      
-      return { 
-        amount, 
+
+      return {
+        amount,
         details: { price, usage }
       };
     } catch (error) {
@@ -432,12 +432,12 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [fetchDataFromDb]);
 
   // 託送従量料金を計算する関数
-  const calculateTakusoVolume = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+  const calculateTakusoVolume = useCallback(async (params: CalculationParams): Promise<{ amount: number, details: any }> => {
     try {
       const contractType = getContractType(params.contractType, params.contractCategory);
       const dbRegion = getDbRegion(params.region);
       const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
-      
+
       const data = await fetchDataFromDb('takuso_price', [
         { field: 'tradeId', operator: '==', value: params.tradeId },
         { field: 'region', operator: '==', value: dbRegion },
@@ -447,9 +447,9 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
 
       const price = parseFloat(data.volumePrice);
       const amount = price * params.usage;
-      
-      return { 
-        amount, 
+
+      return {
+        amount,
         details: { price, usage: params.usage }
       };
     } catch (error) {
@@ -459,7 +459,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [getContractType, getDbRegion, fetchDataFromDb, tradeNameMap]);
 
   // 再エネ賦課金を計算する関数
-  const calculateRenewableSurcharge = useCallback(async (usage: number, year: string, month: string): Promise<{amount: number, details: any}> => {
+  const calculateRenewableSurcharge = useCallback(async (usage: number, year: string, month: string): Promise<{ amount: number, details: any }> => {
     try {
       const startDate = `${year}-${month.padStart(2, '0')}-01`;
       const data = await fetchDataFromDb('renewable_surcharge', [
@@ -468,9 +468,9 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
 
       const price = parseFloat(data.price);
       const amount = price * usage;
-      
-      return { 
-        amount, 
+
+      return {
+        amount,
         details: { price, usage }
       };
     } catch (error) {
@@ -479,11 +479,11 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
   }, [fetchDataFromDb]);
 
   // インセンティブを計算する関数
-  const calculateIncentive = useCallback(async (params: CalculationParams): Promise<{amount: number, details: any}> => {
+  const calculateIncentive = useCallback(async (params: CalculationParams): Promise<{ amount: number, details: any }> => {
     try {
       const contractType = getContractType(params.contractType, params.contractCategory);
       const startDate = `${params.year}-${params.month.padStart(2, '0')}-01`;
-      
+
       const data = await fetchDataFromDb('incentive', [
         { field: 'tradeId', operator: '==', value: params.tradeId },
         { field: 'contract', operator: '==', value: contractType },
@@ -496,7 +496,7 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
         // 数値キーで試行
         monthlyIndex = data.monthlyIndices[parseInt(params.month)];
       }
-      
+
       if (!monthlyIndex) {
         throw new Error(`${params.month}月の指数データが見つかりません。利用可能な月: ${Object.keys(data.monthlyIndices).join(', ')}`);
       }
@@ -525,13 +525,13 @@ const useCalculationLogic = (tradeNameMap: Record<string, string>) => {
         }
       }
 
-      return { 
-        amount: fee, 
-        details: { 
-          monthlyIndex, 
-          acquiredUnits, 
-          fee, 
-          usage: params.usage 
+      return {
+        amount: fee,
+        details: {
+          monthlyIndex,
+          acquiredUnits,
+          fee,
+          usage: params.usage
         }
       };
     } catch (error) {
@@ -867,68 +867,68 @@ const SimulationForm: React.FC = () => {
     const governmentSupport = parseFloat(formData.governmentSupport);
 
     // 各項目を計算
-         const takusoBasicResult = await calculateTakusoBasic({
-       tradeId,
-       region: formData.region,
-       contractCapacity,
-       usage,
-       year: formData.year,
-       month: formData.month,
-       governmentSupport,
-       contractType: formData.contractType,
-       contractCategory: formData.contractCategory,
-       isZeroUsage
-     });
-         const capacityContributionResult = await calculateCapacityContribution({
-       tradeId,
-       region: formData.region,
-       contractCapacity,
-       usage,
-       year: formData.year,
-       month: formData.month,
-       governmentSupport,
-       contractType: formData.contractType,
-       contractCategory: formData.contractCategory,
-       isZeroUsage
-     });
-    
+    const takusoBasicResult = await calculateTakusoBasic({
+      tradeId,
+      region: formData.region,
+      contractCapacity,
+      usage,
+      year: formData.year,
+      month: formData.month,
+      governmentSupport,
+      contractType: formData.contractType,
+      contractCategory: formData.contractCategory,
+      isZeroUsage
+    });
+    const capacityContributionResult = await calculateCapacityContribution({
+      tradeId,
+      region: formData.region,
+      contractCapacity,
+      usage,
+      year: formData.year,
+      month: formData.month,
+      governmentSupport,
+      contractType: formData.contractType,
+      contractCategory: formData.contractCategory,
+      isZeroUsage
+    });
+
     // 使用量が0の場合、基本料金以外の計算をスキップ
     let powerSourceResult, serviceChargeResult, takusoVolumeResult, renewableSurchargeResult, incentiveResult;
-    
-         if (isZeroUsage) {
-       // 使用量が0の場合、基本料金以外は0に設定
-       powerSourceResult = { amount: 0, details: { jepxPrice: 0, areaLossRate: 0, usage: 0 } };
-       serviceChargeResult = { amount: 0, details: { price: 0, usage: 0 } };
-       takusoVolumeResult = { amount: 0, details: { price: 0, usage: 0 } };
-       renewableSurchargeResult = { amount: 0, details: { price: 0, usage: 0 } };
-       incentiveResult = { amount: 0, details: { monthlyIndex: 0, acquiredUnits: 0, fee: 0, usage: 0 } };
-     } else {
+
+    if (isZeroUsage) {
+      // 使用量が0の場合、基本料金以外は0に設定
+      powerSourceResult = { amount: 0, details: { jepxPrice: 0, areaLossRate: 0, usage: 0 } };
+      serviceChargeResult = { amount: 0, details: { price: 0, usage: 0 } };
+      takusoVolumeResult = { amount: 0, details: { price: 0, usage: 0 } };
+      renewableSurchargeResult = { amount: 0, details: { price: 0, usage: 0 } };
+      incentiveResult = { amount: 0, details: { monthlyIndex: 0, acquiredUnits: 0, fee: 0, usage: 0 } };
+    } else {
       // 通常の計算を実行
-             powerSourceResult = await calculatePowerSource({
-         tradeId,
-         region: formData.region,
-         contractCapacity,
-         usage,
-         year: formData.year,
-         month: formData.month,
-         governmentSupport,
-         contractType: formData.contractType,
-         contractCategory: formData.contractCategory,
-         isZeroUsage
-       });
+      powerSourceResult = await calculatePowerSource({
+        tradeId,
+        region: formData.region,
+        contractCapacity,
+        usage,
+        year: formData.year,
+        month: formData.month,
+        governmentSupport,
+        contractType: formData.contractType,
+        contractCategory: formData.contractCategory,
+        isZeroUsage
+      });
       serviceChargeResult = await calculateServiceCharge(usage, formData.year, formData.month);
-             takusoVolumeResult = await calculateTakusoVolume({
-         tradeId,
-         region: formData.region,
-         contractCapacity,
-         usage,
-         year: formData.year,
-         month: formData.month,
-         governmentSupport,
-         contractType: formData.contractType,
-         contractCategory: formData.contractCategory,
-         isZeroUsage
-       });
+      takusoVolumeResult = await calculateTakusoVolume({
+        tradeId,
+        region: formData.region,
+        contractCapacity,
+        usage,
+        year: formData.year,
+        month: formData.month,
+        governmentSupport,
+        contractType: formData.contractType,
+        contractCategory: formData.contractCategory,
+        isZeroUsage
+      });
       renewableSurchargeResult = await calculateRenewableSurcharge(usage, formData.year, formData.month);
       incentiveResult = await calculateIncentive({
         tradeId,
@@ -947,24 +947,24 @@ const SimulationForm: React.FC = () => {
     // 使用量が0の場合の基本料金半額処理
     let finalTakusoBasic = takusoBasicResult.amount;
     let finalCapacityContribution = capacityContributionResult.amount;
-    
-         if (isZeroUsage) {
-       finalTakusoBasic = takusoBasicResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
-       finalCapacityContribution = capacityContributionResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
-     }
+
+    if (isZeroUsage) {
+      finalTakusoBasic = takusoBasicResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
+      finalCapacityContribution = capacityContributionResult.amount * CONSTANTS.ZERO_USAGE_DISCOUNT;
+    }
 
     // 小計を計算
-    const subtotal = finalTakusoBasic + finalCapacityContribution + powerSourceResult.amount + 
-                    serviceChargeResult.amount + takusoVolumeResult.amount + renewableSurchargeResult.amount;
-    
+    const subtotal = finalTakusoBasic + finalCapacityContribution + powerSourceResult.amount +
+      serviceChargeResult.amount + takusoVolumeResult.amount + renewableSurchargeResult.amount;
+
     // 政府支援を計算
     // 使用量が0の場合、政府支援も0に設定
     let governmentSupportAmount = governmentSupport * usage;
-    
-         if (isZeroUsage) {
-       governmentSupportAmount = 0;
-     }
-    
+
+    if (isZeroUsage) {
+      governmentSupportAmount = 0;
+    }
+
     // 合計を計算（インセンティブは別途表示するため小計には含めない）
     const total = subtotal - governmentSupportAmount;
 
@@ -1029,7 +1029,7 @@ const SimulationForm: React.FC = () => {
 
       // 全ての計算が完了するまで待機
       const results = await Promise.all(calculationPromises);
-      
+
       // nullを除外して有効な結果のみを抽出
       const validResults = results.filter((result): result is CalculationResult => result !== null);
 
@@ -1039,7 +1039,7 @@ const SimulationForm: React.FC = () => {
 
       // 合計金額でソート（安い順）
       validResults.sort((a, b) => a.total - b.total);
-      
+
       setCalculationResults(validResults);
 
     } catch (error: any) {
@@ -1057,7 +1057,7 @@ const SimulationForm: React.FC = () => {
         ...prev,
         [name]: value
       };
-      
+
       // 契約カテゴリが変更された場合の処理
       if (name === 'contractCategory') {
         if (value === CONSTANTS.CONTRACT_CATEGORIES.A) {
@@ -1071,7 +1071,7 @@ const SimulationForm: React.FC = () => {
           newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_C.toString();
         }
       }
-      
+
       // 契約種別が変更された場合の処理
       if (name === 'contractType') {
         // if (value === CONSTANTS.CONTRACT_TYPES.POWER) {
@@ -1079,7 +1079,7 @@ const SimulationForm: React.FC = () => {
         //   newData.contractCapacity = CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_POWER.toString();
         // }
       }
-      
+
       return newData;
     });
   }, []);
@@ -1120,7 +1120,7 @@ const SimulationForm: React.FC = () => {
     <Container>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Title>入力画面</Title>
-        <ManualLink href="#">手順書</ManualLink>
+        <ManualLink href="https://docs.google.com/document/d/1OKdNuElBxrVLEGWJDkPCV1NIWDW8-SCjtSi6FuHza4A/edit?usp=sharing">手順書</ManualLink>
       </div>
       <form>
         <Row>
@@ -1147,9 +1147,9 @@ const SimulationForm: React.FC = () => {
             <span style={{ fontSize: '1rem', color: '#666' }}>{CONSTANTS.DEFAULT_VALUES.CONTRACT_CAPACITY_A}kW</span>
           ) : (
             <>
-              <Input 
-                type="number" 
-                min="1" 
+              <Input
+                type="number"
+                min="1"
                 step="0.1"
                 name="contractCapacity"
                 value={formData.contractCapacity}
@@ -1162,17 +1162,17 @@ const SimulationForm: React.FC = () => {
         </Row>
         <Row>
           <Label>使用量</Label>
-          <Input 
-            type="number" 
-            min="0" 
+          <Input
+            type="number"
+            min="0"
             name="usage"
             value={formData.usage}
             onChange={handleInputChange}
           />
           <span>kwh</span>
-          <Checkbox 
-            type="checkbox" 
-            id="zero" 
+          <Checkbox
+            type="checkbox"
+            id="zero"
             checked={isZeroUsage}
             onChange={handleZeroUsageChange}
           />
@@ -1180,9 +1180,9 @@ const SimulationForm: React.FC = () => {
         </Row>
         <Row>
           <Label>現在(税込)</Label>
-          <Input 
-            type="number" 
-            min="0" 
+          <Input
+            type="number"
+            min="0"
             name="currentPrice"
             value={formData.currentPrice}
             onChange={handleInputChange}
@@ -1203,10 +1203,10 @@ const SimulationForm: React.FC = () => {
           </Select>
           <span>月</span>
           <Label style={{ minWidth: 'auto' }}>政府支援</Label>
-          <Input 
-            type="number" 
-            min="0" 
-            style={{ width: '70px' }} 
+          <Input
+            type="number"
+            min="0"
+            style={{ width: '70px' }}
             name="governmentSupport"
             value={formData.governmentSupport}
             onChange={handleInputChange}
@@ -1247,15 +1247,15 @@ const SimulationForm: React.FC = () => {
         </Row> */}
         <Row>
           <Label style={{ minWidth: 'auto' }}>検針日</Label>
-          <DateInput 
-            type="date" 
+          <DateInput
+            type="date"
             name="meterReadingStart"
             value={formData.meterReadingStart}
             onChange={handleInputChange}
           />
           <span>～</span>
-          <DateInput 
-            type="date" 
+          <DateInput
+            type="date"
             name="meterReadingEnd"
             value={formData.meterReadingEnd}
             onChange={handleInputChange}
@@ -1281,21 +1281,21 @@ const SimulationForm: React.FC = () => {
             <SwitchContainer>
               <FormControlLabel
                 control={
-                                  <Switch
-                  checked={showDetails}
-                  onChange={handleShowDetailsChange}
-                  size="small"
-                />
+                  <Switch
+                    checked={showDetails}
+                    onChange={handleShowDetailsChange}
+                    size="small"
+                  />
                 }
                 label="詳細表示"
                 labelPlacement="start"
               />
             </SwitchContainer>
           </ResultHeader>
-          
+
           {calculationResults.map((result, index) => {
             const isSavings = result.total < currentPrice;
-            
+
             return (
               <TradeResultContainer key={index}>
                 {isSavings ? (
@@ -1329,230 +1329,230 @@ const SimulationForm: React.FC = () => {
                     </div>
                   </TradeResultHeader>
                 )}
-              
-                             <TradeResultContent $isExpanded={expandedTrades.has(result.tradeName)}>
-                <TradeResultDetails>
-                  <ResultRow>
-                    <ResultLabel>①託送基本料</ResultLabel>
-                    <ResultValue>{result.takusoBasic.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>契約容量:</DetailLabel>
-                        <DetailValue>{result.details.takusoBasic.contractCapacity}kW</DetailValue>
-                      </DetailRow>
-                      {result.details.takusoBasic.basicPriceType === 'per_kw' ? (
-                        <>
-                          <DetailRow>
-                            <DetailLabel>1kW毎単価:</DetailLabel>
-                            <DetailValue>{result.details.takusoBasic.basicPrice}円/kW</DetailValue>
-                          </DetailRow>
-                          <CalculationFormula>
-                            {result.details.takusoBasic.basicPrice}円/kW × {result.details.takusoBasic.contractCapacity}kW = {result.takusoBasic.toLocaleString()}円
-                            {isZeroUsage && ' (使用量0のため半額)'}
-                          </CalculationFormula>
-                        </>
-                      ) : (
-                        <>
-                          <DetailRow>
-                            <DetailLabel>最初6kW料金:</DetailLabel>
-                            <DetailValue>{result.details.takusoBasic.basicPriceFirst6kw}円</DetailValue>
-                          </DetailRow>
-                          <DetailRow>
-                            <DetailLabel>6kW～単価:</DetailLabel>
-                            <DetailValue>{result.details.takusoBasic.basicPriceOver6kw}円/kW</DetailValue>
-                          </DetailRow>
-                          <CalculationFormula>
-                            {result.details.takusoBasic.basicPriceFirst6kw}円 + {result.details.takusoBasic.basicPriceOver6kw}円/kW × ({result.details.takusoBasic.contractCapacity}kW - 6kW) = {result.takusoBasic.toLocaleString()}円
-                            {isZeroUsage && ' (使用量0のため半額)'}
-                          </CalculationFormula>
-                        </>
-                      )}
-                    </DetailContainer>
-                  )}
 
-                  <ResultRow>
-                    <ResultLabel>②容量拠出金</ResultLabel>
-                    <ResultValue>{result.capacityContribution.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>容量拠出金単価:</DetailLabel>
-                        <DetailValue>{result.details.capacityContribution.price}円/kW</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>契約容量:</DetailLabel>
-                        <DetailValue>{result.details.capacityContribution.contractCapacity}kW</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {result.details.capacityContribution.price}円/kW × {result.details.capacityContribution.contractCapacity}kW = {result.capacityContribution.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため半額)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                <TradeResultContent $isExpanded={expandedTrades.has(result.tradeName)}>
+                  <TradeResultDetails>
+                    <ResultRow>
+                      <ResultLabel>①託送基本料</ResultLabel>
+                      <ResultValue>{result.takusoBasic.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>契約容量:</DetailLabel>
+                          <DetailValue>{result.details.takusoBasic.contractCapacity}kW</DetailValue>
+                        </DetailRow>
+                        {result.details.takusoBasic.basicPriceType === 'per_kw' ? (
+                          <>
+                            <DetailRow>
+                              <DetailLabel>1kW毎単価:</DetailLabel>
+                              <DetailValue>{result.details.takusoBasic.basicPrice}円/kW</DetailValue>
+                            </DetailRow>
+                            <CalculationFormula>
+                              {result.details.takusoBasic.basicPrice}円/kW × {result.details.takusoBasic.contractCapacity}kW = {result.takusoBasic.toLocaleString()}円
+                              {isZeroUsage && ' (使用量0のため半額)'}
+                            </CalculationFormula>
+                          </>
+                        ) : (
+                          <>
+                            <DetailRow>
+                              <DetailLabel>最初6kW料金:</DetailLabel>
+                              <DetailValue>{result.details.takusoBasic.basicPriceFirst6kw}円</DetailValue>
+                            </DetailRow>
+                            <DetailRow>
+                              <DetailLabel>6kW～単価:</DetailLabel>
+                              <DetailValue>{result.details.takusoBasic.basicPriceOver6kw}円/kW</DetailValue>
+                            </DetailRow>
+                            <CalculationFormula>
+                              {result.details.takusoBasic.basicPriceFirst6kw}円 + {result.details.takusoBasic.basicPriceOver6kw}円/kW × ({result.details.takusoBasic.contractCapacity}kW - 6kW) = {result.takusoBasic.toLocaleString()}円
+                              {isZeroUsage && ' (使用量0のため半額)'}
+                            </CalculationFormula>
+                          </>
+                        )}
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>③電源料金</ResultLabel>
-                    <ResultValue>{result.powerSource.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>Jepx月平均料金:</DetailLabel>
-                        <DetailValue>{result.details.powerSource.jepxPrice}円/kWh</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>エリア損失率:</DetailLabel>
-                        <DetailValue>{result.details.powerSource.areaLossRate}%</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>使用量:</DetailLabel>
-                        <DetailValue>{result.details.powerSource.usage}kWh</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        ({result.details.powerSource.usage}kWh × {result.details.powerSource.jepxPrice}円/kWh ÷ (1 - {result.details.powerSource.areaLossRate / 100})) × 1.1 = {result.powerSource.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>②容量拠出金</ResultLabel>
+                      <ResultValue>{result.capacityContribution.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>容量拠出金単価:</DetailLabel>
+                          <DetailValue>{result.details.capacityContribution.price}円/kW</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>契約容量:</DetailLabel>
+                          <DetailValue>{result.details.capacityContribution.contractCapacity}kW</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {result.details.capacityContribution.price}円/kW × {result.details.capacityContribution.contractCapacity}kW = {result.capacityContribution.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため半額)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>④サービス料</ResultLabel>
-                    <ResultValue>{result.serviceCharge.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>サービス料単価:</DetailLabel>
-                        <DetailValue>{result.details.serviceCharge.price}円/kWh</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>使用量:</DetailLabel>
-                        <DetailValue>{result.details.serviceCharge.usage}kWh</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {result.details.serviceCharge.price}円/kWh × {result.details.serviceCharge.usage}kWh = {result.serviceCharge.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>③電源料金</ResultLabel>
+                      <ResultValue>{result.powerSource.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>Jepx月平均料金:</DetailLabel>
+                          <DetailValue>{result.details.powerSource.jepxPrice}円/kWh</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>エリア損失率:</DetailLabel>
+                          <DetailValue>{result.details.powerSource.areaLossRate}%</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>使用量:</DetailLabel>
+                          <DetailValue>{result.details.powerSource.usage}kWh</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          ({result.details.powerSource.usage}kWh × {result.details.powerSource.jepxPrice}円/kWh ÷ (1 - {result.details.powerSource.areaLossRate / 100})) × 1.1 = {result.powerSource.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>⑤託送従量料金</ResultLabel>
-                    <ResultValue>{result.takusoVolume.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>託送従量単価:</DetailLabel>
-                        <DetailValue>{result.details.takusoVolume.price}円/kWh</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>使用量:</DetailLabel>
-                        <DetailValue>{result.details.takusoVolume.usage}kWh</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {result.details.takusoVolume.price}円/kWh × {result.details.takusoVolume.usage}kWh = {result.takusoVolume.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>④サービス料</ResultLabel>
+                      <ResultValue>{result.serviceCharge.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>サービス料単価:</DetailLabel>
+                          <DetailValue>{result.details.serviceCharge.price}円/kWh</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>使用量:</DetailLabel>
+                          <DetailValue>{result.details.serviceCharge.usage}kWh</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {result.details.serviceCharge.price}円/kWh × {result.details.serviceCharge.usage}kWh = {result.serviceCharge.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>⑥再エネ賦課金</ResultLabel>
-                    <ResultValue>{result.renewableSurcharge.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>再エネ賦課金単価:</DetailLabel>
-                        <DetailValue>{result.details.renewableSurcharge.price}円/kWh</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>使用量:</DetailLabel>
-                        <DetailValue>{result.details.renewableSurcharge.usage}kWh</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {result.details.renewableSurcharge.price}円/kWh × {result.details.renewableSurcharge.usage}kWh = {result.renewableSurcharge.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>⑤託送従量料金</ResultLabel>
+                      <ResultValue>{result.takusoVolume.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>託送従量単価:</DetailLabel>
+                          <DetailValue>{result.details.takusoVolume.price}円/kWh</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>使用量:</DetailLabel>
+                          <DetailValue>{result.details.takusoVolume.usage}kWh</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {result.details.takusoVolume.price}円/kWh × {result.details.takusoVolume.usage}kWh = {result.takusoVolume.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>⑦小計（①～⑥の合計）</ResultLabel>
-                    <ResultValue>{result.subtotal.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <CalculationFormula>
-                        {result.takusoBasic.toLocaleString()} + {result.capacityContribution.toLocaleString()} + {result.powerSource.toLocaleString()} + {result.serviceCharge.toLocaleString()} + {result.takusoVolume.toLocaleString()} + {result.renewableSurcharge.toLocaleString()} = {result.subtotal.toLocaleString()}円
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>⑥再エネ賦課金</ResultLabel>
+                      <ResultValue>{result.renewableSurcharge.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>再エネ賦課金単価:</DetailLabel>
+                          <DetailValue>{result.details.renewableSurcharge.price}円/kWh</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>使用量:</DetailLabel>
+                          <DetailValue>{result.details.renewableSurcharge.usage}kWh</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {result.details.renewableSurcharge.price}円/kWh × {result.details.renewableSurcharge.usage}kWh = {result.renewableSurcharge.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>政府支援控除</ResultLabel>
-                    <ResultValue>-{result.governmentSupport.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>政府支援単価:</DetailLabel>
-                        <DetailValue>{formData.governmentSupport}円/kWh</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>使用量:</DetailLabel>
-                        <DetailValue>{formData.usage}kWh</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {formData.governmentSupport}円/kWh × {formData.usage}kWh = {result.governmentSupport.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>⑦小計（①～⑥の合計）</ResultLabel>
+                      <ResultValue>{result.subtotal.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <CalculationFormula>
+                          {result.takusoBasic.toLocaleString()} + {result.capacityContribution.toLocaleString()} + {result.powerSource.toLocaleString()} + {result.serviceCharge.toLocaleString()} + {result.takusoVolume.toLocaleString()} + {result.renewableSurcharge.toLocaleString()} = {result.subtotal.toLocaleString()}円
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <TotalRow>
-                    <ResultLabel>⑨合計金額</ResultLabel>
-                    <ResultValue>{result.total.toLocaleString()}円</ResultValue>
-                  </TotalRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <CalculationFormula>
-                        {result.subtotal.toLocaleString()}円 - {result.governmentSupport.toLocaleString()}円 = {result.total.toLocaleString()}円
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
+                    <ResultRow>
+                      <ResultLabel>政府支援控除</ResultLabel>
+                      <ResultValue>-{result.governmentSupport.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>政府支援単価:</DetailLabel>
+                          <DetailValue>{formData.governmentSupport}円/kWh</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>使用量:</DetailLabel>
+                          <DetailValue>{formData.usage}kWh</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {formData.governmentSupport}円/kWh × {formData.usage}kWh = {result.governmentSupport.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
 
-                  <ResultRow>
-                    <ResultLabel>インセンティブ</ResultLabel>
-                    <ResultValue style={{ color: '#2e7d32' }}>{result.incentive.toLocaleString()}円</ResultValue>
-                  </ResultRow>
-                  {showDetails && (
-                    <DetailContainer>
-                      <DetailRow>
-                        <DetailLabel>{formData.month}月の指数:</DetailLabel>
-                        <DetailValue>{result.details.incentive.monthlyIndex}</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>獲得件数:</DetailLabel>
-                        <DetailValue>{result.details.incentive.acquiredUnits.toFixed(2)}件</DetailValue>
-                      </DetailRow>
-                      <DetailRow>
-                        <DetailLabel>手数料:</DetailLabel>
-                        <DetailValue>{result.details.incentive.fee}円</DetailValue>
-                      </DetailRow>
-                      <CalculationFormula>
-                        {formData.usage}kWh × {result.details.incentive.monthlyIndex} = {result.details.incentive.acquiredUnits.toFixed(2)}件 → {result.incentive.toLocaleString()}円
-                        {isZeroUsage && ' (使用量0のため0円)'}
-                      </CalculationFormula>
-                    </DetailContainer>
-                  )}
-                </TradeResultDetails>
-              </TradeResultContent>
-            </TradeResultContainer>
+                    <TotalRow>
+                      <ResultLabel>⑨合計金額</ResultLabel>
+                      <ResultValue>{result.total.toLocaleString()}円</ResultValue>
+                    </TotalRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <CalculationFormula>
+                          {result.subtotal.toLocaleString()}円 - {result.governmentSupport.toLocaleString()}円 = {result.total.toLocaleString()}円
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
+
+                    <ResultRow>
+                      <ResultLabel>インセンティブ</ResultLabel>
+                      <ResultValue style={{ color: '#2e7d32' }}>{result.incentive.toLocaleString()}円</ResultValue>
+                    </ResultRow>
+                    {showDetails && (
+                      <DetailContainer>
+                        <DetailRow>
+                          <DetailLabel>{formData.month}月の指数:</DetailLabel>
+                          <DetailValue>{result.details.incentive.monthlyIndex}</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>獲得件数:</DetailLabel>
+                          <DetailValue>{result.details.incentive.acquiredUnits.toFixed(2)}件</DetailValue>
+                        </DetailRow>
+                        <DetailRow>
+                          <DetailLabel>手数料:</DetailLabel>
+                          <DetailValue>{result.details.incentive.fee}円</DetailValue>
+                        </DetailRow>
+                        <CalculationFormula>
+                          {formData.usage}kWh × {result.details.incentive.monthlyIndex} = {result.details.incentive.acquiredUnits.toFixed(2)}件 → {result.incentive.toLocaleString()}円
+                          {isZeroUsage && ' (使用量0のため0円)'}
+                        </CalculationFormula>
+                      </DetailContainer>
+                    )}
+                  </TradeResultDetails>
+                </TradeResultContent>
+              </TradeResultContainer>
             );
           })}
         </ResultContainer>
